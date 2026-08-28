@@ -1,4 +1,3 @@
-# DoAnTotNghiep
 # ĐỀ CƯƠNG ĐỒ ÁN TỐT NGHIỆP
 
 ## Thiết kế và triển khai hệ thống giám sát cảm biến trên ô tô theo tiêu chuẩn AUTOSAR
