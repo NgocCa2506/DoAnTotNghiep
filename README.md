@@ -1,6 +1,6 @@
 # ĐỀ CƯƠNG ĐỒ ÁN TỐT NGHIỆP
 
-## Thiết kế và triển khai hệ thống giám sát cảm biến trên ô tô theo tiêu chuẩn AUTOSAR
+## Thiết kế và triển khai hệ thống giám sát và chẩn đoán lỗi cảm biến trên ô tô theo tiêu chuẩn AUTOSAR
 
 **Nhóm thực hiện:** 2 sinh viên
 **Thời gian thực hiện:** 12 tuần (~3 tháng)
