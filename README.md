@@ -713,4 +713,177 @@ Trước khi bắt đầu triển khai (cuối Tuần 1), nhóm nên trình bày
 
 ---
 
+## 24. Phần cứng dự án
+
+### 24.1. Nguyên tắc lựa chọn phần cứng
+
+Hệ thống gồm **2 node vật lý độc lập** kết nối qua CAN bus: **ECU node** (đọc cảm biến, chẩn đoán) và **GUI node** (hiển thị OLED). Có thể tùy chọn thêm **OBD-II Reader** là node thứ 3 (một MCU nhỏ khác) hoặc chạy trên PC qua bộ chuyển đổi USB-CAN. Tiêu chí chọn linh kiện: rẻ, phổ biến, dễ mua, có sẵn thư viện/HAL, đủ ngoại vi cần thiết (ADC, I2C, CAN hoặc CAN qua transceiver rời), không yêu cầu công cụ đắt tiền.
+
+### 24.2. Danh sách phần cứng (BOM – Bill of Materials)
+
+| # | Linh kiện | Số lượng | Vai trò | Ghi chú lựa chọn |
+|---|---|---|---|---|
+| 1 | **MCU cho ECU node** — STM32F103C8T6 ("Blue Pill") hoặc STM32F407VET6 | 1 | Đóng vai trò ECU prototype: đọc ADC, chạy RTE/SWC/DEM/NvM, giao tiếp CAN | STM32 dòng F1/F4 có bxCAN nội bộ, ADC 12-bit, I2C, đủ ngoại vi; cộng đồng lớn, tài liệu nhiều, giá rẻ (~50–100k VNĐ) |
+| 2 | **MCU cho GUI node** — STM32F103C8T6 (hoặc Arduino Nano/Uno + module CAN rời nếu muốn đơn giản hóa code) | 1 | Đọc CAN, điều khiển OLED, xử lý nút bấm | Nên cùng họ STM32 với ECU để tái sử dụng code CAN Driver/CanIf, giảm công sức phát triển |
+| 3 | **MCU cho OBD-II Reader (tùy chọn)** — STM32F103C8T6 hoặc dùng PC + USB-CAN adapter (ví dụ CANable, Waveshare USB-CAN) | 1 (hoặc thay bằng PC) | Gửi request 0x500, nhận response 0x501, hiển thị DTC qua UART/Serial Monitor hoặc màn hình PC | Dùng PC + USB-CAN đơn giản hơn về phần cứng, chỉ cần viết script Python (python-can) |
+| 4 | **CAN Transceiver** — MCP2551 hoặc SN65HVD230 (module rời) | 2–3 (1/node) | Chuyển đổi tín hiệu CAN logic (Tx/Rx của MCU) thành tín hiệu vi sai CAN_H/CAN_L trên bus | STM32 chỉ có CAN controller (bxCAN), cần transceiver rời để ra bus vật lý |
+| 5 | **Điện trở terminator CAN 120 Ω** | 2 | Đấu ở 2 đầu bus CAN để chống phản xạ tín hiệu | Bắt buộc để bus CAN hoạt động ổn định ở baudrate 500 kbps |
+| 6 | **Màn hình OLED I2C SSD1306 128x64** | 1 | Thiết bị hiển thị GUI | Rẻ, phổ biến, thư viện I2C có sẵn cho STM32/Arduino |
+| 7 | **Nút bấm (tactile push button)** | 3 | Điều hướng menu GUI (Up/Down/Select) | Có thể thêm nút thứ 4 (Back) nếu cần |
+| 8 | **Biến trở (potentiometer) 10kΩ** | 2 | Mô phỏng cảm biến **Coolant Temperature** và **Oil Pressure** dưới dạng tín hiệu analog thay đổi được bằng tay, dùng để test/demo Fault Injection trực quan | Thay thế cho NTC thermistor thật, dễ điều khiển giá trị khi demo |
+| 9 | **NTC Thermistor 10kΩ (tùy chọn, tăng tính thực tế)** | 1 | Phương án thay thế/bổ sung cho biến trở Coolant Temp nếu muốn mô phỏng gần với cảm biến nhiệt độ thật | Cần thêm mạch chia áp + công thức chuyển đổi Steinhart-Hart hoặc bảng tra |
+| 10 | **Mạch chia áp (voltage divider) bằng điện trở cố định** | 1 bộ (2 điện trở) | Đọc **Battery Voltage** từ nguồn cấp board (quy đổi về dải điện áp ADC an toàn, ví dụ 0–3.3V) | Tính toán tỷ lệ chia áp theo điện áp nguồn thực tế sử dụng (ví dụ 12V mô phỏng → chia về ≤3.3V) |
+| 11 | **EEPROM I2C — AT24C32 (module rời)** | 1 | Lưu trữ DTC bền vững (NvM) | Phương án đơn giản hóa so với Flash emulation nội bộ, thư viện I2C dễ triển khai |
+| 12 | **Mạch nạp/debug — ST-Link V2 (clone)** | 1–2 | Nạp firmware và debug cho các board STM32 | Có thể dùng chung 1 cái nếu nạp tuần tự |
+| 13 | **Nguồn cấp — Adapter 5V/12V hoặc pin, breadboard power module** | Theo nhu cầu | Cấp nguồn cho các node và mạch mô phỏng | Nên có nguồn riêng ổn định cho mỗi node khi demo |
+| 14 | **Breadboard, dây jumper, điện trở phụ, tụ lọc** | Theo nhu cầu | Lắp mạch thử nghiệm | Dùng để dựng toàn bộ mạch mô phỏng cảm biến và kết nối CAN |
+| 15 | **USB-CAN Adapter (nếu dùng PC làm OBD-II Reader hoặc CAN Analyzer)** — ví dụ CANable, Waveshare USB-CAN-A | 1 | Kết nối CAN bus với PC để debug/log hoặc chạy công cụ OBD-II Reader | Rất hữu ích cho việc bắt bản tin CAN khi test (mục 17), nên có ít nhất 1 cái dù không dùng làm node chính thức |
+
+### 24.3. Sơ đồ kết nối phần cứng (mức tổng quan)
+
+```
+[Biến trở Coolant]──ADC1
+[Biến trở Oil]──────ADC2      ┌─────────────────────┐
+[Chia áp Battery]───ADC3 ────►│   ECU MCU (STM32)     │
+                               │  ADC/DIO/I2C(NvM)      │
+                               │  CAN Tx/Rx ──► MCP2551 │──┐
+                               └─────────────────────┘   │
+[EEPROM AT24C32]──I2C──────────────────┘                 │
+                                                            │ CAN Bus (500 kbps, 120Ω x2)
+                               ┌─────────────────────┐   │
+                               │   GUI MCU (STM32)     │◄──┘
+[OLED SSD1306]──I2C────────────►  I2C(OLED)/GPIO(nút)   │
+[3 nút bấm]──GPIO──────────────►  CAN Tx/Rx ──► MCP2551 │──┐
+                               └─────────────────────┘   │
+                                                            │
+                               ┌─────────────────────┐   │
+                               │  OBD-II Reader          │◄──┘
+                               │  (MCU phụ hoặc PC+USB-CAN)│
+                               └─────────────────────┘
+```
+
+### 24.4. Ước tính chi phí (tham khảo, có thể thay đổi theo thị trường)
+
+Tổng chi phí phần cứng ước tính cho toàn bộ dự án (2 MCU STM32 + transceiver + OLED + EEPROM + linh kiện phụ + USB-CAN adapter) rơi vào khoảng **800.000 – 1.500.000 VNĐ**, tùy việc có sẵn số linh kiện nào từ trước (nhiều sinh viên đã có sẵn board STM32/Arduino, breadboard, dây jumper).
+
+---
+
+## 25. Cấu trúc thư mục và file dự án
+
+### 25.1. Nguyên tắc tổ chức
+
+Vì hệ thống gồm **firmware cho 2–3 node độc lập** (ECU, GUI, OBD-II Reader) nhưng cần **chia sẻ định nghĩa chung** (CAN ID, DTC list, signal scale factor) để tránh sai lệch giữa hai bên khi phát triển song song, cấu trúc thư mục được tổ chức thành các project riêng biệt cộng với một thư mục `Common/` dùng chung.
+
+### 25.2. Cây thư mục đề xuất
+
+```
+DATN_AUTOSAR_Sensor_Monitoring/
+│
+├── ECU_Firmware/                        # Firmware MCU đóng vai trò ECU (Thành viên 1 chủ trì)
+│   ├── Application/
+│   │   ├── SensorMonitoring_SWC.c
+│   │   ├── SensorMonitoring_SWC.h
+│   │   ├── Diagnostic_SWC.c
+│   │   ├── Diagnostic_SWC.h
+│   │   ├── FaultInjection_Handler.c
+│   │   └── FaultInjection_Handler.h
+│   │
+│   ├── Rte/
+│   │   ├── Rte.c
+│   │   ├── Rte.h
+│   │   └── Rte_Cfg.h                    # Khai báo các port Sender-Receiver/Client-Server
+│   │
+│   ├── ServiceLayer/
+│   │   ├── Dem/
+│   │   │   ├── Dem.c
+│   │   │   ├── Dem.h
+│   │   │   └── Dem_Cfg.h                # Bảng ánh xạ EventId → DTC, tham số debounce
+│   │   ├── NvM/
+│   │   │   ├── NvM.c
+│   │   │   ├── NvM.h
+│   │   │   └── NvM_Cfg.h                # Cấu hình block lưu trữ DTC
+│   │   ├── Com/
+│   │   │   ├── Com.c
+│   │   │   ├── Com.h
+│   │   │   └── Com_Cfg.h                # Mapping signal ↔ PDU
+│   │   └── PduR/
+│   │       ├── PduR.c
+│   │       └── PduR.h
+│   │
+│   ├── EcuAbstraction/
+│   │   ├── IoHwAb/
+│   │   │   ├── IoHwAb.c
+│   │   │   └── IoHwAb.h                 # Hàm quy đổi ADC → giá trị vật lý
+│   │   └── CanIf/
+│   │       ├── CanIf.c
+│   │       ├── CanIf.h
+│   │       └── CanIf_Cfg.h              # Ánh xạ CAN ID ↔ PDU ID
+│   │
+│   ├── Mcal/
+│   │   ├── Adc/ (Adc.c, Adc.h)
+│   │   ├── Dio/ (Dio.c, Dio.h)
+│   │   ├── Can/ (Can.c, Can.h)          # Bọc lại HAL/SDK của STM32 (HAL_CAN_*, HAL_ADC_*)
+│   │   └── Eeprom/ (Eeprom_I2C.c, Eeprom_I2C.h)
+│   │
+│   ├── Config/
+│   │   ├── Threshold_Cfg.h              # Ngưỡng over/under-range, timeout cho từng cảm biến
+│   │   └── EcuState_Cfg.h
+│   │
+│   ├── Drivers/                         # HAL/SDK vendor (do STM32CubeMX/CubeIDE sinh ra)
+│   ├── main.c
+│   ├── ECU_Firmware.ioc                 # File cấu hình STM32CubeMX
+│   └── Makefile / platformio.ini
+│
+├── GUI_Firmware/                        # Firmware MCU đóng vai trò GUI (Thành viên 2 chủ trì)
+│   ├── Display/
+│   │   ├── Ssd1306_Driver.c / .h        # Driver OLED (hoặc thư viện có sẵn)
+│   │   ├── Screen_SensorDashboard.c / .h
+│   │   ├── Screen_EcuStatus.c / .h
+│   │   ├── Screen_DtcDisplay.c / .h
+│   │   ├── Screen_CanStatus.c / .h
+│   │   └── Screen_FaultInjectionMenu.c / .h
+│   │
+│   ├── Input/
+│   │   ├── Button_Driver.c / .h
+│   │   └── MenuStateMachine.c / .h
+│   │
+│   ├── Can/
+│   │   ├── CanIf_Gui.c / .h
+│   │   └── Can_Gui.c / .h
+│   │
+│   ├── Mcal/ (tái sử dụng Can.c/.h từ ECU_Firmware nếu cùng họ MCU)
+│   ├── Drivers/
+│   ├── Config/
+│   ├── main.c
+│   └── GUI_Firmware.ioc / Makefile
+│
+├── OBD_Reader_Tool/                     # Công cụ đọc OBD-II (Thành viên 2 hỗ trợ)
+│   ├── obd_reader.py                    # Nếu dùng PC + USB-CAN (python-can)
+│   ├── requirements.txt
+│   └── README.md
+│   # Hoặc thay bằng OBD_Reader_Firmware/ nếu dùng MCU phụ, cấu trúc tương tự GUI_Firmware/
+│
+├── Common/                              # Định nghĩa dùng chung giữa các node — QUAN TRỌNG để tránh sai lệch
+│   ├── CanIds.h                         # Toàn bộ CAN ID, DLC, chu kỳ (mục 12)
+│   ├── DtcList.h                        # Bảng 6 DTC dùng chung (mục 10)
+│   └── SignalDefs.h                     # Scale factor, offset, đơn vị của từng signal
+│
+├── Docs/
+│   ├── Architecture/                    # Sơ đồ kiến trúc, sơ đồ khối, sơ đồ kết nối phần cứng
+│   ├── TestPlan/                        # Test case chi tiết, test report, log CAN capture
+│   ├── DemoScript.md
+│   └── Report/                          # Báo cáo đồ án tốt nghiệp (Word/LaTeX)
+│
+└── README.md                            # Hướng dẫn build, nạp firmware, cấu hình môi trường
+```
+
+### 25.3. Ghi chú quan trọng
+
+- **`Common/` là thư mục bắt buộc dùng chung**: cả `ECU_Firmware/` và `GUI_Firmware/` (và `OBD_Reader_Tool/`) đều `#include` các file trong `Common/` để đảm bảo CAN ID, DTC, và signal scale factor luôn đồng bộ giữa các node — tránh lỗi kinh điển là 2 bên định nghĩa lệch nhau (ví dụ ECU gửi Coolant scale x10 nhưng GUI đọc x1).
+- Mỗi thư mục con trong `ECU_Firmware/` **ánh xạ trực tiếp 1-1 với các lớp kiến trúc AUTOSAR** đã mô tả ở mục 6–7, giúp báo cáo đồ án và code nhất quán với nhau khi trình bày trước hội đồng.
+- Nếu dùng STM32CubeIDE, mỗi project (`ECU_Firmware`, `GUI_Firmware`) nên là 1 project CubeIDE riêng biệt; nếu dùng PlatformIO, có thể tổ chức thành 2 environment riêng trong cùng 1 workspace.
+- Nên dùng **Git repository chung** cho toàn bộ `DATN_AUTOSAR_Sensor_Monitoring/`, với `.gitignore` loại trừ các file build tạm (`Debug/`, `Release/`, `*.o`, `*.bin`), để cả 2 thành viên cùng theo dõi thay đổi ở `Common/`.
+
+---
+
 *Tài liệu này là đề cương tổng thể cho đồ án tốt nghiệp, có thể được điều chỉnh nhỏ trong quá trình triển khai thực tế, miễn là không làm thay đổi phạm vi cốt lõi đã chốt ở mục 23.*
