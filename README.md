@@ -17,15 +17,17 @@ Tên tiếng Anh: Design and implementation of an automotive sensor monitoring a
 
 ## 2. Tổng quan
 
-Đồ án xây dựng một **ECU prototype** dựa trên vi điều khiển (MCU), có nhiệm vụ đọc dữ liệu từ các cảm biến ô tô mô phỏng, giám sát và phát hiện bất thường, quản lý sự kiện chẩn đoán (Diagnostic Event) và mã lỗi (DTC), lưu trạng thái lỗi vào bộ nhớ không bay hơi (NVM), và truyền dữ liệu/trạng thái ra ngoài qua giao thức **CAN**. Một thiết bị GUI (màn hình OLED I2C, điều khiển bằng nút bấm) đóng vai trò màn hình giám sát, nhận dữ liệu từ ECU qua CAN để hiển thị cảm biến, trạng thái ECU và lỗi. Ngoài ra, hệ thống hỗ trợ xuất chẩn đoán theo chuẩn **OBD-II** ở mức đơn giản và một bộ đọc OBD-II tối giản để đọc lại các mã lỗi này.
+Đồ án xây dựng một **ECU prototype** dựa trên vi điều khiển (MCU), có nhiệm vụ đọc dữ liệu từ các cảm biến ô tô mô phỏng, giám sát và phát hiện bất thường, quản lý sự kiện chẩn đoán (Diagnostic Event) và mã lỗi (DTC), lưu trạng thái lỗi vào bộ nhớ không bay hơi (NVM), và truyền dữ liệu/trạng thái ra ngoài qua giao thức **CAN**. Một thiết bị GUI (màn hình OLED I2C, điều khiển bằng nút bấm) đóng vai trò màn hình giám sát, nhận dữ liệu từ ECU qua CAN để hiển thị cảm biến, trạng thái ECU và lỗi. Ngoài ra, hệ thống hỗ trợ chẩn đoán theo hướng **UDS (ISO 14229) ở mức lõi (core subset)** — thay thế hoàn toàn cách tiếp cận OBD-II trước đây — thông qua module DCM và một **UDS Diagnostic Tester** tool tối giản để gửi yêu cầu chẩn đoán và đọc lại DTC.
 
-Kiến trúc phần mềm trên MCU được tổ chức **theo tư duy AUTOSAR Classic** (không triển khai toàn bộ chuẩn AUTOSAR đầy đủ), gồm các lớp: Application, RTE, Service Layer (DEM, NvM, COM, PduR), ECU Abstraction Layer (CanIf, IoHwAb), và MCAL (CAN Driver, ADC, DIO). Cách tiếp cận này giúp sinh viên hiểu và thể hiện được tư duy phân lớp, tách biệt phần cứng và phần mềm ứng dụng theo đúng triết lý AUTOSAR, trong khi vẫn giữ khối lượng công việc khả thi trong 3 tháng với 2 người.
+Kiến trúc phần mềm trên MCU được tổ chức **theo tư duy AUTOSAR Classic** (không triển khai toàn bộ chuẩn AUTOSAR đầy đủ), gồm các lớp: Application, RTE, Service Layer (DEM, NvM, COM, PduR, **DCM**), ECU Abstraction Layer (CanIf, IoHwAb), và MCAL (CAN Driver, ADC, DIO). Cách tiếp cận này giúp sinh viên hiểu và thể hiện được tư duy phân lớp, tách biệt phần cứng và phần mềm ứng dụng theo đúng triết lý AUTOSAR, trong khi vẫn giữ khối lượng công việc khả thi trong 3 tháng với 2 người.
+
+**Nguyên tắc kiến trúc quan trọng:** giao tiếp CAN được tách bạch rõ ràng thành hai đường riêng biệt, không được trộn lẫn — (1) **luồng ứng dụng** (dữ liệu cảm biến, trạng thái ECU định kỳ) đi qua RTE → COM → PduR → CanIf, và (2) **luồng chẩn đoán UDS** (đọc/xóa DTC) đi qua CanIf → PduR → DCM → DEM/RTE/NvM. COM không xử lý bất kỳ dịch vụ UDS nào; DCM không tham gia vào đường truyền dữ liệu ứng dụng định kỳ.
 
 Đồ án tập trung vào **luồng lõi**:
 
 ```
-Sensor → ECU (MCAL/IoHwAb/RTE/SWC) → Fault Diagnosis → DEM/DTC → CAN → GUI
-                                                              ↘ OBD-II export → OBD-II Reader
+Sensor → ECU (MCAL/IoHwAb/RTE/SWC) → Fault Diagnosis → DEM/DTC → CAN (COM) → GUI
+                                                              ↘ DTC → CAN (DCM, UDS) → UDS Diagnostic Tester
 ```
 
 ---
@@ -46,7 +48,7 @@ Sensor → ECU (MCAL/IoHwAb/RTE/SWC) → Fault Diagnosis → DEM/DTC → CAN →
 12. GUI hiển thị danh sách DTC/lỗi hiện hành.
 13. Có cơ chế Fault Injection để tạo tình huống lỗi phục vụ demo.
 14. Kiểm thử được toàn bộ luồng end-to-end: Sensor → ECU → Diagnosis → DTC → CAN → GUI.
-15. Xuất được chẩn đoán lỗi theo khuôn mẫu đơn giản hóa của OBD-II và đọc lại được bằng bộ đọc riêng.
+15. Hỗ trợ chẩn đoán qua UDS ở mức lõi (ReadDTCInformation – 0x19, ClearDiagnosticInformation – 0x14) và đọc/xóa lại được bằng một UDS Diagnostic Tester tool riêng.
 
 ---
 
@@ -62,50 +64,51 @@ Sensor → ECU (MCAL/IoHwAb/RTE/SWC) → Fault Diagnosis → DEM/DTC → CAN →
 - Giao tiếp CAN giữa MCU và PC/thiết bị GUI (dùng CAN transceiver + module CAN-USB hoặc 2 MCU có CAN).
 - GUI trên màn hình OLED I2C + nút bấm điều hướng, chỉ hiển thị dữ liệu ECU gửi về.
 - Fault Injection đơn giản (qua nút bấm/lệnh từ GUI hoặc lệnh CAN).
-- Xuất bản tin chẩn đoán dạng đơn giản hóa theo tinh thần OBD-II (không phải UDS/ISO 14229 đầy đủ) và một bộ đọc OBD-II tối giản (có thể là chương trình trên PC hoặc MCU thứ hai).
+- Triển khai **DCM (Diagnostic Communication Manager)** xử lý một tập con lõi các dịch vụ UDS (ISO 14229) qua CAN: **ReadDTCInformation (0x19)** và **ClearDiagnosticInformation (0x14)**, dùng khung CanTp Single Frame (không triển khai multi-frame ISO-TP đầy đủ trong core scope) — hoàn toàn tách biệt khỏi đường COM/PduR dùng cho dữ liệu ứng dụng định kỳ.
+- Một **UDS Diagnostic Tester** tool tối giản (chương trình trên PC hoặc MCU thứ hai) để gửi request UDS và đọc/xóa DTC.
 - Test plan và kịch bản demo end-to-end.
 
 ### 4.2. Ngoài phạm vi bắt buộc (không tự ý mở rộng thành yêu cầu chính)
 
 Các mục sau **không** được coi là chức năng bắt buộc của core project. Nếu đề xuất, chỉ được xếp vào mục 22 – *Optional/Future Work*, kèm giải thích lý do không cần thiết:
 
-- Diagnostic Tester chuyên dụng độc lập.
-- Máy chẩn đoán ô tô chuyên dụng (scan tool thương mại).
-- UDS đầy đủ (ISO 14229) với đầy đủ dịch vụ (Session Control, Security Access, Routine Control...).
+- Diagnostic Tester chuyên dụng/thương mại (scan tool công nghiệp). UDS Diagnostic Tester trong đồ án chỉ là một tool tối giản (PC/MCU phụ) gửi được 2 dịch vụ core (0x19, 0x14), không phải sản phẩm chẩn đoán chuyên dụng.
+- UDS đầy đủ (ISO 14229) với đầy đủ dịch vụ (Session Control 0x10, Security Access 0x27, Routine Control 0x31, Download/Transfer 0x34/0x36/0x37...).
+- CanTp/ISO-TP đa khung (multi-frame: First Frame/Consecutive Frame/Flow Control) — core scope chỉ dùng Single Frame.
 - Gateway ECU (định tuyến giữa nhiều mạng CAN/LIN/Ethernet).
 - Bootloader và ECU reprogramming (flashing qua CAN).
 - Triển khai toàn bộ chuẩn AUTOSAR Classic (Basic Software đầy đủ, RTE Generator tự động, cấu hình ARXML chuẩn).
 - Bất kỳ chức năng nào không phục vụ trực tiếp mục tiêu 1–15 ở mục 3.
 
-**Lưu ý quan trọng:** GUI trong đồ án **không mặc định được gọi là Diagnostic Tester**. GUI trước hết chỉ đóng vai trò là **màn hình giám sát và hiển thị** (monitoring display), nhận dữ liệu thụ động từ ECU qua CAN. Việc GUI gửi lệnh Fault Injection là một chức năng phụ trợ phục vụ demo, không biến GUI thành một Diagnostic Tester theo đúng nghĩa UDS.
+**Lưu ý quan trọng:** GUI trong đồ án **không phải là Diagnostic Tester** và **không bao giờ gửi UDS request**. GUI trước hết chỉ đóng vai trò là **màn hình giám sát và hiển thị** (monitoring display), nhận dữ liệu thụ động từ ECU qua CAN (đường COM/PduR/CanIf). Việc GUI gửi lệnh Fault Injection (0x400) là một bản tin ứng dụng phụ trợ phục vụ demo, đi qua cùng đường COM/PduR/CanIf — không liên quan đến DCM. Vai trò Diagnostic Tester theo đúng nghĩa UDS thuộc về node **UDS Diagnostic Tester** riêng biệt (mục 24), giao tiếp với DCM qua bản tin 0x500/0x501.
 
 ---
 
 ## 5. Kiến trúc tổng thể
 
 ```
-┌─────────────────────────────┐         CAN Bus         ┌─────────────────────────────┐
-│         ECU (MCU)           │◄────────────────────────►│      GUI Device / PC        │
-│                              │                          │                              │
-│  Sensors → ADC/DIO           │                          │  OLED I2C Display            │
-│  → Sensor Monitoring SWC     │                          │  Nút bấm điều hướng          │
-│  → Diagnostic SWC            │                          │  Nhận CAN → hiển thị:        │
-│  → DEM → DTC                 │                          │   - Sensor Dashboard         │
-│  → NvM (lưu DTC)              │                          │   - ECU Status               │
-│  → COM/PduR/CanIf/CAN Driver │                          │   - DTC List                 │
-│                              │                          │   - CAN Status                │
+┌───────────────────────────── ┐         CAN Bus          ┌─────────────────────────────┐
+│         ECU (MCU)            │◄────────────────────────►│      GUI Device / PC        │
+│                              │                          │                             │
+│  Sensors → ADC/DIO           │                          │  OLED I2C Display           │
+│  → Sensor Monitoring SWC     │                          │  Nút bấm điều hướng         │
+│  → Diagnostic SWC            │                          │  Nhận CAN → hiển thị:       │
+│  → DEM → DTC                 │                          │   - Sensor Dashboard        │
+│  → NvM (lưu DTC)             │                          │   - ECU Status              │
+│  → COM/PduR/CanIf/CAN Driver │                          │   - DTC List                │
+│                              │                          │   - CAN Status              │
 └──────────────┬───────────────┘                          └─────────────────────────────┘
                │
-               │ OBD-II style export (qua CAN, request/response đơn giản)
+               │ UDS diagnostic path (qua CAN, DCM, ISO 14229 rút gọn)
                ▼
       ┌─────────────────────┐
-      │   OBD-II Reader       │
+      │ UDS Diagnostic Tester │
       │ (PC tool / MCU phụ)   │
-      │ Đọc DTC theo yêu cầu   │
+      │ Đọc/xóa DTC (0x19/0x14)│
       └─────────────────────┘
 ```
 
-**Luồng dữ liệu chính:**
+**Luồng dữ liệu ứng dụng (application, qua COM):**
 
 ```
 Sensor (Coolant/Oil/Battery/...) 
@@ -117,7 +120,17 @@ Sensor (Coolant/Oil/Battery/...)
    → DTC (+ NvM lưu trạng thái) 
    → COM → PduR → CanIf → CAN Driver 
    → CAN Bus 
-   → GUI (hiển thị) / OBD-II Reader (đọc DTC theo yêu cầu)
+   → GUI (hiển thị)
+```
+
+**Luồng dữ liệu chẩn đoán (diagnostic, qua DCM, song song và độc lập với luồng trên):**
+
+```
+UDS Diagnostic Tester (request 0x500: SID 0x19/0x14)
+   → CAN Bus → CAN Driver → CanIf → PduR → DCM 
+   → (RTE →) DEM / NvM (đọc hoặc xóa DTC)
+   → DCM → PduR → CanIf → CAN Driver → CAN Bus
+   → UDS Diagnostic Tester (response 0x501)
 ```
 
 ---
@@ -126,13 +139,13 @@ Sensor (Coolant/Oil/Battery/...)
 
 Đồ án áp dụng **tư duy phân lớp của AUTOSAR Classic Platform**, không dùng công cụ cấu hình ARXML thương mại, mà tự hiện thực các lớp bằng C, mô phỏng đúng vai trò và giao diện (interface) giữa các lớp.
 
-| Lớp                                | Vai trò trong đồ án                                                                                                           | Mức triển khai                                                                               |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| **Application Layer**         | Chứa các SWC nghiệp vụ: Sensor Monitoring SWC, Diagnostic SWC                                                                 | Triển khai thật, là trọng tâm đồ án                                                    |
-| **RTE (Runtime Environment)** | Lớp trung gian, chuẩn hóa giao tiếp giữa SWC và Service Layer bằng các hàm kiểu Sender-Receiver/Client-Server rút gọn | Triển khai thật nhưng viết tay (hand-written RTE), không dùng RTE Generator              |
-| **Service Layer**             | DEM, NvM, COM, PduR                                                                                                               | Triển khai thật ở mức rút gọn (simplified)                                               |
-| **ECU Abstraction Layer**     | IoHwAb, CanIf                                                                                                                     | Triển khai thật ở mức rút gọn                                                            |
-| **MCAL**                      | CAN Driver, ADC Driver, DIO Driver                                                                                                | Dùng driver có sẵn của hãng MCU (HAL/SDK), được "bọc" lại theo giao diện kiểu MCAL |
+| Lớp                                | Vai trò trong đồ án                                                                                                           | Mức triển khai                                                                                                                                                                                                                     |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Application Layer**         | Chứa các SWC nghiệp vụ: Sensor Monitoring SWC, Diagnostic SWC                                                                 | Triển khai thật, là trọng tâm đồ án                                                                                                                                                                                          |
+| **RTE (Runtime Environment)** | Lớp trung gian, chuẩn hóa giao tiếp giữa SWC và Service Layer bằng các hàm kiểu Sender-Receiver/Client-Server rút gọn | Triển khai thật nhưng viết tay (hand-written RTE), không dùng RTE Generator                                                                                                                                                    |
+| **Service Layer**             | DEM, NvM, COM, PduR,**DCM**                                                                                                 | Triển khai thật ở mức rút gọn (simplified).**COM** chỉ xử lý dữ liệu ứng dụng (signal/PDU định kỳ); **DCM** chỉ xử lý dịch vụ UDS (0x19/0x14) — hai module không được trộn lẫn trách nhiệm |
+| **ECU Abstraction Layer**     | IoHwAb, CanIf                                                                                                                     | Triển khai thật ở mức rút gọn                                                                                                                                                                                                  |
+| **MCAL**                      | CAN Driver, ADC Driver, DIO Driver                                                                                                | Dùng driver có sẵn của hãng MCU (HAL/SDK), được "bọc" lại theo giao diện kiểu MCAL                                                                                                                                       |
 
 Việc này giúp thể hiện đúng **nguyên lý phân tách phần cứng – phần mềm ứng dụng** của AUTOSAR mà không cần bộ công cụ AUTOSAR thương mại, vốn không khả thi trong 3 tháng với 2 sinh viên.
 
@@ -179,15 +192,15 @@ Với mỗi module: chức năng, input/output, quan hệ gọi, luồng dữ li
 
 ### 7.4. DEM (Diagnostic Event Manager)
 
-| Mục                | Nội dung                                                                                                                                               |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chức năng         | Quản lý các Diagnostic Event, ánh xạ Event → DTC, quản lý status byte của DTC (TestFailed, Confirmed, Pending...), gọi NvM để lưu khi cần |
-| Input               | DEM_SetEventStatus(EventId, Status) từ Diagnostic SWC                                                                                                  |
-| Output              | Cập nhật bảng DTC status; gửi thông báo cho COM để phát CAN; gọi NvM_WriteBlock khi DTC được confirm                                       |
-| Gọi / được gọi | Được gọi bởi RTE (từ Diagnostic SWC); gọi NvM và thông báo cho COM (qua RTE)                                                                  |
-| Luồng dữ liệu    | Diagnostic SWC → RTE → DEM → (NvM, COM)                                                                                                              |
-| Mock hay thật      | Triển khai thật ở mức rút gọn (không cần đầy đủ debounce counter phức tạp như AUTOSAR chuẩn, có thể dùng bộ đếm đơn giản)      |
-| Ưu tiên           | **Cao**                                                                                                                                           |
+| Mục                | Nội dung                                                                                                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Chức năng         | Quản lý các Diagnostic Event, ánh xạ Event → DTC, quản lý status byte của DTC (TestFailed, Confirmed, Pending...), gọi NvM để lưu khi cần                                                                                                      |
+| Input               | DEM_SetEventStatus(EventId, Status) từ Diagnostic SWC                                                                                                                                                                                                       |
+| Output              | Cập nhật bảng DTC status; gửi thông báo cho COM để phát CAN (trạng thái tổng quan, định kỳ/khi đổi); cung cấp API đọc snapshot DTC và API Clear cho**DCM** (phục vụ UDS 0x19/0x14); gọi NvM_WriteBlock khi DTC được confirm |
+| Gọi / được gọi | Được gọi bởi RTE (từ Diagnostic SWC) và bởi DCM (đọc/xóa DTC theo yêu cầu UDS); gọi NvM và thông báo cho COM (qua RTE)                                                                                                                      |
+| Luồng dữ liệu    | Diagnostic SWC → RTE → DEM → (NvM, COM); DCM → DEM (đọc/xóa, đường riêng, không qua COM)                                                                                                                                                         |
+| Mock hay thật      | Triển khai thật ở mức rút gọn (không cần đầy đủ debounce counter phức tạp như AUTOSAR chuẩn, có thể dùng bộ đếm đơn giản)                                                                                                           |
+| Ưu tiên           | **Cao**                                                                                                                                                                                                                                                |
 
 ### 7.5. NvM (NVRAM Manager)
 
@@ -203,28 +216,42 @@ Với mỗi module: chức năng, input/output, quan hệ gọi, luồng dữ li
 
 ### 7.6. COM (Communication Manager)
 
-| Mục                | Nội dung                                                                                                                                         |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chức năng         | Đóng gói dữ liệu (sensor value, DTC status, ECU status) thành các tín hiệu (signal) và ghép vào PDU theo chu kỳ hoặc theo sự kiện |
-| Input               | Giá trị cảm biến, trạng thái DTC, trạng thái ECU (qua RTE)                                                                                |
-| Output              | PDU gửi xuống PduR; dữ liệu nhận từ PduR được giải mã thành signal cho RTE                                                            |
-| Gọi / được gọi | Được gọi bởi RTE (Tx path); gọi PduR (Tx); được PduR gọi callback khi nhận (Rx path)                                                   |
-| Luồng dữ liệu    | RTE → COM → PduR (Tx); PduR → COM → RTE (Rx)                                                                                                  |
-| Mock hay thật      | Triển khai thật ở mức rút gọn (mapping signal cố định, không cần cấu hình động)                                                    |
-| Ưu tiên           | **Cao**                                                                                                                                     |
+| Mục                 | Nội dung                                                                                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Chức năng          | Đóng gói dữ liệu (sensor value, DTC status, ECU status) thành các tín hiệu (signal) và ghép vào PDU theo chu kỳ hoặc theo sự kiện                                    |
+| Input                | Giá trị cảm biến, trạng thái DTC, trạng thái ECU (qua RTE)                                                                                                                   |
+| Output               | PDU gửi xuống PduR; dữ liệu nhận từ PduR được giải mã thành signal cho RTE                                                                                               |
+| Gọi / được gọi  | Được gọi bởi RTE (Tx path); gọi PduR (Tx); được PduR gọi callback khi nhận (Rx path)                                                                                      |
+| Luồng dữ liệu     | RTE → COM → PduR (Tx); PduR → COM → RTE (Rx)                                                                                                                                     |
+| Mock hay thật       | Triển khai thật ở mức rút gọn (mapping signal cố định, không cần cấu hình động)                                                                                       |
+| Ưu tiên            | **Cao**                                                                                                                                                                        |
+| Ghi chú quan trọng | **Không xử lý bất kỳ dịch vụ UDS nào** (0x19/0x14). Toàn bộ giao tiếp chẩn đoán đi qua **DCM**, không đi qua COM dù cả hai cùng dùng chung CAN bus. |
 
-### 7.7. PduR (PDU Router)
+### 7.7. DCM (Diagnostic Communication Manager)
 
-| Mục                | Nội dung                                                                                                                                     |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chức năng         | Định tuyến PDU giữa COM và CanIf (trong đồ án chỉ có 1 tuyến CAN nên định tuyến đơn giản, mang tính minh họa kiến trúc) |
-| Input/Output        | PDU từ COM → CanIf; PDU từ CanIf → COM                                                                                                    |
-| Gọi / được gọi | Gọi bởi COM và CanIf hai chiều                                                                                                            |
-| Luồng dữ liệu    | COM ↔ PduR ↔ CanIf                                                                                                                          |
-| Mock hay thật      | Có thể triển khai tối giản (gần như pass-through) vì chỉ có 1 kênh CAN                                                             |
-| Ưu tiên           | **Thấp–Trung bình** (giữ để đúng kiến trúc, nhưng không cần định tuyến phức tạp)                                      |
+| Mục                 | Nội dung                                                                                                                                                                                                                              |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chức năng          | Nhận diagnostic PDU (0x500) từ PduR, giải mã UDS request (SID + sub-function/tham số theo CanTp Single Frame), gọi DEM/NvM (qua RTE nếu cần) để đọc/xóa DTC, sinh positive/negative response và gửi xuống PduR (0x501) |
+| Input                | Diagnostic PDU từ PduR (Rx); kết quả đọc/xóa từ DEM                                                                                                                                                                             |
+| Output               | Diagnostic PDU cho PduR (Tx): positive response (SID+0x40) hoặc negative response (0x7F, NRC)                                                                                                                                         |
+| Gọi / được gọi  | Được gọi bởi PduR (Rx diagnostic path); gọi DEM (đọc/xóa DTC) qua RTE; gọi PduR (Tx response)                                                                                                                                |
+| Luồng dữ liệu     | CanIf → PduR → DCM → DEM/NvM (qua RTE) → DCM → PduR → CanIf                                                                                                                                                                      |
+| Mock hay thật       | Triển khai thật ở mức rút gọn: hỗ trợ 2 SID (0x19, 0x14), CanTp Single Frame, có xử lý Negative Response (NRC)                                                                                                              |
+| Ưu tiên            | **Cao** (là phần thay thế trực tiếp cho OBD-II export cũ, bắt buộc để đạt mục tiêu "đúng tư duy UDS")                                                                                                           |
+| Ghi chú quan trọng | **Không tham gia đường dữ liệu ứng dụng định kỳ.** DCM không được gọi trực tiếp CanIf/CAN Driver — luôn đi qua PduR như mọi module Service Layer khác, giữ đúng abstraction boundary.                 |
 
-### 7.8. CanIf (CAN Interface)
+### 7.8. PduR (PDU Router)
+
+| Mục                | Nội dung                                                                                                                                                                                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chức năng         | Định tuyến PDU theo PDU ID giữa**hai luồng tách biệt**: (1) COM ↔ CanIf cho PDU ứng dụng (0x100/0x200/0x300/0x400), và (2) DCM ↔ CanIf cho PDU chẩn đoán (0x500/0x501). Không chứa business logic, không tự quyết định nội dung DTC hay UDS service. |
+| Input/Output        | PDU từ COM hoặc DCM → CanIf; PDU từ CanIf → COM hoặc DCM (định tuyến theo PDU ID/CAN ID)                                                                                                                                                                                 |
+| Gọi / được gọi | Gọi bởi COM, DCM và CanIf hai chiều                                                                                                                                                                                                                                           |
+| Luồng dữ liệu    | COM ↔ PduR ↔ CanIf (ứng dụng); DCM ↔ PduR ↔ CanIf (chẩn đoán)                                                                                                                                                                                                            |
+| Mock hay thật      | Triển khai tối giản (bảng ánh xạ PDU ID → module đích) vì chỉ có 1 kênh CAN vật lý, nhưng vẫn phải phân biệt đúng 2 luồng logic                                                                                                                            |
+| Ưu tiên           | **Thấp–Trung bình** (giữ để đúng kiến trúc, nhưng không cần định tuyến phức tạp)                                                                                                                                                                          |
+
+### 7.9. CanIf (CAN Interface)
 
 | Mục                | Nội dung                                                                                          |
 | ------------------- | -------------------------------------------------------------------------------------------------- |
@@ -235,7 +262,7 @@ Với mỗi module: chức năng, input/output, quan hệ gọi, luồng dữ li
 | Mock hay thật      | Triển khai thật ở mức rút gọn                                                                |
 | Ưu tiên           | **Trung bình**                                                                              |
 
-### 7.9. CAN Driver (MCAL)
+### 7.10. CAN Driver (MCAL)
 
 | Mục                | Nội dung                                                                     |
 | ------------------- | ----------------------------------------------------------------------------- |
@@ -246,7 +273,7 @@ Với mỗi module: chức năng, input/output, quan hệ gọi, luồng dữ li
 | Mock hay thật      | Dùng driver/SDK có sẵn của hãng MCU, bọc lại theo API MCAL             |
 | Ưu tiên           | **Cao** (bắt buộc để có CAN thật)                                 |
 
-### 7.10. IoHwAb (I/O Hardware Abstraction)
+### 7.11. IoHwAb (I/O Hardware Abstraction)
 
 | Mục                | Nội dung                                                                                                         |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -258,7 +285,7 @@ Với mỗi module: chức năng, input/output, quan hệ gọi, luồng dữ li
 | Mock hay thật      | Triển khai thật (đơn giản, hàm quy đổi tuyến tính hoặc bảng tra)                                      |
 | Ưu tiên           | **Cao**                                                                                                     |
 
-### 7.11. ADC Driver (MCAL)
+### 7.12. ADC Driver (MCAL)
 
 | Mục                | Nội dung                                                                                                                                 |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -268,7 +295,7 @@ Với mỗi module: chức năng, input/output, quan hệ gọi, luồng dữ li
 | Mock hay thật      | Dùng SDK/HAL có sẵn của MCU                                                                                                           |
 | Ưu tiên           | **Cao**                                                                                                                             |
 
-### 7.12. DIO Driver (MCAL)
+### 7.13. DIO Driver (MCAL)
 
 | Mục                | Nội dung                                                                                 |
 | ------------------- | ----------------------------------------------------------------------------------------- |
@@ -337,16 +364,16 @@ DTC (mã lỗi cụ thể) → NvM lưu → COM/PduR/CanIf/CAN Driver phát lên
 
 Đề xuất **6 DTC** — đủ để minh họa toàn bộ các loại lỗi mà không gây quá tải quản lý.
 
-| DTC (dạng OBD-II style) | Tên                          | Điều kiện                                                      | Nguồn                                                                                       |
-| ------------------------ | ----------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| P0217                    | Coolant Over Temperature      | Coolant > ngưỡng trên                                          | Coolant Temp                                                                                 |
-| P0522                    | Oil Pressure Low              | Oil Pressure < ngưỡng dưới                                    | Oil Pressure                                                                                 |
-| P0562                    | Battery Under Voltage         | Battery Voltage < ngưỡng dưới                                 | Battery Voltage                                                                              |
-| P0116                    | Coolant Sensor Signal Invalid | ADC ngoài dải vật lý hợp lệ                                 | Coolant Temp                                                                                 |
-| P0117                    | Sensor Signal Timeout         | Không có dữ liệu mới trong thời gian quy định             | Bất kỳ cảm biến nào (dùng chung 1 mã, phân biệt bằng dữ liệu bổ sung nếu cần) |
-| U0100                    | CAN Communication Timeout     | GUI không nhận được bản tin ECU trong thời gian quy định | Giao tiếp CAN                                                                               |
+| DTC (mã nội bộ dự án) | Tên                          | Điều kiện                                                      | Nguồn                                                                                       |
+| -------------------------- | ----------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| 0xD101                     | Coolant Over Temperature      | Coolant > ngưỡng trên                                          | Coolant Temp                                                                                 |
+| 0xD102                     | Oil Pressure Low              | Oil Pressure < ngưỡng dưới                                    | Oil Pressure                                                                                 |
+| 0xD103                     | Battery Under Voltage         | Battery Voltage < ngưỡng dưới                                 | Battery Voltage                                                                              |
+| 0xD104                     | Coolant Sensor Signal Invalid | ADC ngoài dải vật lý hợp lệ                                 | Coolant Temp                                                                                 |
+| 0xD105                     | Sensor Signal Timeout         | Không có dữ liệu mới trong thời gian quy định             | Bất kỳ cảm biến nào (dùng chung 1 mã, phân biệt bằng dữ liệu bổ sung nếu cần) |
+| 0xD106                     | CAN Communication Timeout     | GUI không nhận được bản tin ECU trong thời gian quy định | Giao tiếp CAN                                                                               |
 
-> Ghi chú: Mã DTC dùng định dạng gợi nhớ theo chuẩn OBD-II (P0xxx cho Powertrain, U0xxx cho Network) mang tính minh họa học thuật, không nhất thiết trùng khớp 100% với mã thật trong ISO 15031-6/SAE J2012 — điều này nên được nêu rõ với giảng viên (xem mục 23).
+> Ghi chú: Mã DTC là **mã nội bộ do đồ án tự định nghĩa (2 byte)**, độc lập hoàn toàn với PID OBD-II (SAE J2012) đã bị loại bỏ khỏi thiết kế. Đây cũng **không phải** DTC 3-byte đầy đủ theo Annex D của ISO 14229-1 — là bản rút gọn để vừa trong 1 khung CAN đơn (Single Frame), phục vụ mục tiêu học thuật. Cần nêu rõ điều này với giảng viên (xem mục 23).
 
 ### 10.1. Cấu trúc trạng thái DTC (status byte rút gọn)
 
@@ -357,6 +384,8 @@ DTC (mã lỗi cụ thể) → NvM lưu → COM/PduR/CanIf/CAN Driver phát lên
 | Confirmed                | Lỗi đã được xác nhận (đủ debounce), được ghi vào NvM  |
 | TestFailedSinceLastClear | Đã từng fail kể từ lần Clear DTC gần nhất                   |
 | OccurrenceCounter        | Số lần lỗi được Confirm                                       |
+
+> Ghi chú: 4 trường trạng thái đầu tương ứng gần đúng với bit0 (testFailed), bit2 (pendingDTC), bit3 (confirmedDTC), bit4 (testFailedSinceLastClear) của DTC status byte theo Table D.2, ISO 14229-1; các bit còn lại (testFailedThisOperationCycle, warningIndicatorRequested...) không triển khai trong scope rút gọn này.
 
 ---
 
@@ -383,14 +412,16 @@ DTC (mã lỗi cụ thể) → NvM lưu → COM/PduR/CanIf/CAN Driver phát lên
 
 ### 12.2. Danh sách bản tin CAN
 
-| CAN ID | Tên bản tin             | DLC | Chu kỳ                                                  | Chiều               |
-| ------ | ------------------------- | --- | -------------------------------------------------------- | -------------------- |
-| 0x100  | Sensor Data Message       | 8   | 100 ms                                                   | ECU → GUI           |
-| 0x200  | Diagnostic Status Message | 8   | Event-triggered (khi DTC thay đổi) + heartbeat 1000 ms | ECU → GUI           |
-| 0x300  | ECU Status Message        | 4   | 500 ms                                                   | ECU → GUI           |
-| 0x400  | Fault Injection Command   | 2   | Event-triggered (khi người dùng thao tác trên GUI)  | GUI → ECU           |
-| 0x500  | OBD-II Style Request      | 3   | On-demand                                                | OBD-II Reader → ECU |
-| 0x501  | OBD-II Style Response     | 8   | On-demand (đáp ứng 0x500)                             | ECU → OBD-II Reader |
+| CAN ID | Tên bản tin             | DLC | Chu kỳ                                                  | Chiều                       |
+| ------ | ------------------------- | --- | -------------------------------------------------------- | ---------------------------- |
+| 0x100  | Sensor Data Message       | 8   | 100 ms                                                   | ECU → GUI                   |
+| 0x200  | Diagnostic Status Message | 8   | Event-triggered (khi DTC thay đổi) + heartbeat 1000 ms | ECU → GUI                   |
+| 0x300  | ECU Status Message        | 4   | 500 ms                                                   | ECU → GUI                   |
+| 0x400  | Fault Injection Command   | 2   | Event-triggered (khi người dùng thao tác trên GUI)  | GUI → ECU                   |
+| 0x500  | UDS Diagnostic Request    | 8   | On-demand                                                | UDS Diagnostic Tester → ECU |
+| 0x501  | UDS Diagnostic Response   | 8   | On-demand (đáp ứng 0x500)                             | ECU → UDS Diagnostic Tester |
+
+> **Phân tách luồng (bắt buộc):** 0x100/0x200/0x300/0x400 là PDU **ứng dụng**, đi qua COM/PduR/CanIf. 0x500/0x501 là PDU **chẩn đoán UDS**, đi qua DCM/PduR/CanIf. Cả hai dùng chung CanIf/PduR/CAN Driver (đúng vai trò abstraction của các lớp này) nhưng **không bao giờ đi qua COM**, và DCM không bao giờ xử lý PDU 0x100–0x400.
 
 ### 12.3. Data layout chi tiết
 
@@ -427,22 +458,48 @@ DTC (mã lỗi cụ thể) → NvM lưu → COM/PduR/CanIf/CAN Driver phát lên
 | 0    | Fault ID (1: Coolant OverTemp, 2: Oil Low, 3: Battery UnderVoltage, 4: Sensor Invalid, 5: CAN Timeout, 0: Clear all) |
 | 1    | Action (1: Inject, 0: Clear)                                                                                         |
 
-**0x500/0x501 – OBD-II Style Request/Response**
+**0x500 – UDS Diagnostic Request (CanTp Single Frame, ISO 15765-2 rút gọn)**
 
-Đơn giản hóa theo tinh thần Mode 03 (Read DTC) và Mode 04 (Clear DTC) của OBD-II:
+| Byte | Nội dung                                                                                                                                 |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | PCI — CanTp Single Frame:`0x0N` (N = số byte dữ liệu UDS phía sau, N ≤ 6)                                                         |
+| 1    | SID (Service ID):`0x19` = ReadDTCInformation, `0x14` = ClearDiagnosticInformation                                                     |
+| 2    | Sub-function: với 0x19 →`0x01` = reportNumberOfDTCByStatusMask, `0x02` = reportDTCByStatusMask; với 0x14 → không dùng (bỏ qua) |
+| 3    | Tham số: statusMask (với 0x19); byte cao nhất của groupOfDTC (với 0x14 — cố định`0xFF` = tất cả nhóm trong scope này)      |
+| 4–7 | Padding (khuyến nghị`0xCC` theo quy ước phổ biến của AUTOSAR CanIf/PduR — ISO 15765-2 không bắt buộc giá trị cụ thể)     |
 
-| Byte (Request) | Nội dung                              |
-| -------------- | -------------------------------------- |
-| 0              | Mode (0x03: Read DTC, 0x04: Clear DTC) |
-| 1–2           | Reserved                               |
+**0x501 – UDS Diagnostic Response (CanTp Single Frame)**
 
-| Byte (Response) | Nội dung                   |
-| --------------- | --------------------------- |
-| 0               | Mode echo                   |
-| 1               | Số DTC                     |
-| 2–7            | Tối đa 3 DTC (2 byte/DTC) |
+Positive response:
+
+| Byte | Nội dung                                             |
+| ---- | ----------------------------------------------------- |
+| 0    | PCI (Single Frame)                                    |
+| 1    | SID +`0x40` (Positive Response SID)                 |
+| 2–6 | Dữ liệu phản hồi tùy dịch vụ (xem mục 12.3.1) |
+| 7    | Padding                                               |
+
+Negative response (khi request sai hoặc không hợp lệ):
+
+| Byte | Nội dung                              |
+| ---- | -------------------------------------- |
+| 0    | PCI =`0x03`                          |
+| 1    | `0x7F` (Negative Response Indicator) |
+| 2    | SID được yêu cầu (echo)           |
+| 3    | NRC (Negative Response Code)           |
+| 4–7 | Padding                                |
+
+NRC tối thiểu cần hỗ trợ: `0x11` serviceNotSupported, `0x12` subFunctionNotSupported, `0x13` incorrectMessageLengthOrInvalidFormat, `0x31` requestOutOfRange.
+
+### 12.3.1. Dữ liệu phản hồi theo từng dịch vụ
+
+- **0x19 sub 0x01 – reportNumberOfDTCByStatusMask:** byte2 = DTCStatusAvailabilityMask, byte3 = DTCFormatIdentifier (cố định `0x01` = "định dạng rút gọn của đồ án"), byte4–5 = DTCCount (uint16).
+- **0x19 sub 0x02 – reportDTCByStatusMask:** do giới hạn Single Frame (tối đa 5 byte dữ liệu UDS), chỉ trả về **1 DTC** thỏa mask có mức ưu tiên cao nhất (ví dụ Confirmed gần nhất) — byte2–3 = mã DTC (2 byte, xem mục 10), byte4 = status byte của DTC đó. Đây là giới hạn có chủ đích của scope rút gọn; xem toàn bộ danh sách DTC vẫn có thể thực hiện qua GUI (bản tin 0x200). Hỗ trợ trả về danh sách đầy đủ nhiều DTC qua UDS cần CanTp multi-frame — xem mục 22 (Optional/Future Work).
+- **0x14 – ClearDiagnosticInformation:** request dùng groupOfDTC cố định = tất cả (`0xFFFFFF`, rút gọn còn 1 byte `0xFF` ở byte 3 của request); response chỉ gồm PCI + SID+0x40, không có dữ liệu thêm.
 
 ### 12.4. Luồng xử lý CAN
+
+**Luồng ứng dụng (0x100/0x200/0x300/0x400):**
 
 ```
 Application/RTE (dữ liệu cần gửi)
@@ -456,8 +513,26 @@ CanIf (ánh xạ PDU ↔ CAN ID)
 CAN Driver (gửi frame vật lý)
    ↓
 CAN Bus
-   ↓ (chiều nhận, đối với Fault Injection Command và OBD-II Request)
-CAN Driver → CanIf → PduR → COM → RTE → Application (Diagnostic SWC / Fault Injection Handler)
+   ↓ (chiều nhận, đối với Fault Injection Command 0x400)
+CAN Driver → CanIf → PduR → COM → RTE → Application (Fault Injection Handler)
+```
+
+**Luồng chẩn đoán UDS (0x500/0x501, hoàn toàn tách biệt, không qua COM):**
+
+```
+UDS Diagnostic Tester gửi request (0x500)
+   ↓
+CAN Bus → CAN Driver → CanIf (ánh xạ CAN ID ↔ PDU ID) → PduR (định tuyến đến DCM)
+   ↓
+DCM (giải mã SID/sub-function, xử lý Single Frame CanTp)
+   ↓
+RTE → DEM (đọc hoặc xóa DTC) [và NvM nếu Clear cần ghi lại trạng thái]
+   ↓
+DCM (đóng gói positive/negative response)
+   ↓
+PduR → CanIf → CAN Driver → CAN Bus
+   ↓
+UDS Diagnostic Tester nhận response (0x501)
 ```
 
 ---
@@ -542,40 +617,46 @@ GUI hiển thị lỗi
    → CAN Driver (gửi frame) 
    → CAN Bus 
    → [GUI Device] nhận frame → hiển thị Sensor/ECU Status/DTC
-   → [OBD-II Reader] gửi request 0x500 → ECU phản hồi 0x501 → hiển thị DTC đọc được
+
+(song song, độc lập, không đi qua COM)
+
+[UDS Diagnostic Tester] gửi request UDS (0x500: SID 0x19/0x14)
+   → CanIf → PduR → DCM → RTE → DEM/NvM (đọc hoặc xóa DTC)
+   → DCM → PduR → CanIf → CAN Bus
+   → [UDS Diagnostic Tester] nhận response (0x501) → hiển thị DTC đọc được / xác nhận Clear
 ```
 
 ---
 
 ## 16. Use Case
 
-| Mã   | Tên Use Case                         | Actor                                  | Mô tả ngắn                                                                                        |
-| ----- | ------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| UC-01 | Giám sát cảm biến bình thường  | ECU                                    | ECU đọc và gửi dữ liệu cảm biến định kỳ, không có lỗi                                  |
-| UC-02 | Phát hiện lỗi cảm biến           | ECU                                    | ECU phát hiện giá trị bất thường, tạo DTC, gửi CAN                                          |
-| UC-03 | Lưu và khôi phục DTC sau reset    | ECU                                    | DTC được lưu NvM, khôi phục sau khi ECU khởi động lại                                      |
-| UC-04 | Hiển thị dữ liệu trên GUI        | Người dùng, GUI                     | Người vận hành xem dữ liệu cảm biến/DTC trên OLED                                           |
-| UC-05 | Tạo lỗi giả lập (Fault Injection) | Người dùng, GUI                     | Người vận hành chủ động tạo tình huống lỗi để demo                                      |
-| UC-06 | Đọc DTC qua OBD-II Reader           | Người dùng, OBD-II Reader           | Người vận hành dùng thiết bị đọc riêng để lấy danh sách DTC                            |
-| UC-07 | Xóa DTC (Clear DTC)                  | Người dùng, GUI hoặc OBD-II Reader | Xóa toàn bộ DTC đã lưu, reset trạng thái chẩn đoán                                        |
-| UC-08 | Phát hiện mất kết nối CAN        | GUI                                    | GUI phát hiện không nhận được bản tin ECU trong thời gian quy định, hiển thị cảnh báo |
+| Mã   | Tên Use Case                         | Actor                                | Mô tả ngắn                                                                                                                                                                                                                                          |
+| ----- | ------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| UC-01 | Giám sát cảm biến bình thường  | ECU                                  | ECU đọc và gửi dữ liệu cảm biến định kỳ, không có lỗi                                                                                                                                                                                    |
+| UC-02 | Phát hiện lỗi cảm biến           | ECU                                  | ECU phát hiện giá trị bất thường, tạo DTC, gửi CAN                                                                                                                                                                                            |
+| UC-03 | Lưu và khôi phục DTC sau reset    | ECU                                  | DTC được lưu NvM, khôi phục sau khi ECU khởi động lại                                                                                                                                                                                        |
+| UC-04 | Hiển thị dữ liệu trên GUI        | Người dùng, GUI                   | Người vận hành xem dữ liệu cảm biến/DTC trên OLED                                                                                                                                                                                             |
+| UC-05 | Tạo lỗi giả lập (Fault Injection) | Người dùng, GUI                   | Người vận hành chủ động tạo tình huống lỗi để demo                                                                                                                                                                                        |
+| UC-06 | Đọc DTC qua UDS (0x19)              | Người dùng, UDS Diagnostic Tester | Người vận hành dùng Tester gửi ReadDTCInformation để lấy số lượng/DTC hiện hành                                                                                                                                                          |
+| UC-07 | Xóa DTC qua UDS (0x14)               | Người dùng, UDS Diagnostic Tester | Người vận hành dùng Tester gửi ClearDiagnosticInformation để xóa toàn bộ DTC đã lưu.**Chỉ thực hiện qua UDS Diagnostic Tester, không qua GUI**, để giữ đúng phân tách vai trò monitoring (GUI) và diagnostic (Tester) |
+| UC-08 | Phát hiện mất kết nối CAN        | GUI                                  | GUI phát hiện không nhận được bản tin ECU trong thời gian quy định, hiển thị cảnh báo                                                                                                                                                   |
 
 ---
 
 ## 17. Test Plan
 
-| Hạng mục         | Mục tiêu kiểm thử                                                                | Phương pháp                                                         |
-| ------------------ | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| Sensor acquisition | ADC/DIO đọc đúng giá trị, quy đổi đơn vị chính xác                      | So sánh giá trị đọc được với đồng hồ đo tham chiếu       |
-| Sensor monitoring  | Phát hiện đúng các trạng thái Normal/Over/Under/Invalid/Timeout               | Test với giá trị input được kiểm soát (biến trở, mô phỏng) |
-| Fault detection    | Debounce hoạt động đúng, không báo lỗi giả với nhiễu ngắn                | Tạo xung nhiễu ngắn hạn, kiểm tra không Confirm DTC              |
-| DTC creation       | DTC được tạo đúng mã, đúng điều kiện                                     | Kiểm tra bảng DTC sau khi Inject từng loại lỗi                    |
-| DTC status         | Status byte cập nhật đúng (Pending → Confirmed), OccurrenceCounter tăng đúng | Kiểm tra qua log debug hoặc CAN message                              |
-| NVM persistence    | DTC còn tồn tại sau khi reset ECU                                                 | Tạo lỗi → reset ECU → kiểm tra DTC còn nguyên                   |
-| CAN communication  | Đúng CAN ID, đúng chu kỳ, đúng data layout                                    | Dùng CAN analyzer / logger để bắt và so sánh                     |
-| GUI                | Hiển thị đúng dữ liệu nhận được, cập nhật kịp thời                     | So sánh dữ liệu trên GUI với dữ liệu gửi từ ECU               |
-| Fault Injection    | Lệnh inject từ GUI/nút bấm tạo đúng lỗi tương ứng                         | Test từng loại lỗi trong danh sách mục 14.3                       |
-| OBD-II Reader      | Đọc đúng danh sách DTC theo yêu cầu, Clear DTC hoạt động                   | Gửi request 0x500, kiểm tra response 0x501                           |
+| Hạng mục            | Mục tiêu kiểm thử                                                                                                                                             | Phương pháp                                                                                    |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Sensor acquisition    | ADC/DIO đọc đúng giá trị, quy đổi đơn vị chính xác                                                                                                   | So sánh giá trị đọc được với đồng hồ đo tham chiếu                                  |
+| Sensor monitoring     | Phát hiện đúng các trạng thái Normal/Over/Under/Invalid/Timeout                                                                                            | Test với giá trị input được kiểm soát (biến trở, mô phỏng)                            |
+| Fault detection       | Debounce hoạt động đúng, không báo lỗi giả với nhiễu ngắn                                                                                             | Tạo xung nhiễu ngắn hạn, kiểm tra không Confirm DTC                                         |
+| DTC creation          | DTC được tạo đúng mã, đúng điều kiện                                                                                                                  | Kiểm tra bảng DTC sau khi Inject từng loại lỗi                                               |
+| DTC status            | Status byte cập nhật đúng (Pending → Confirmed), OccurrenceCounter tăng đúng                                                                              | Kiểm tra qua log debug hoặc CAN message                                                         |
+| NVM persistence       | DTC còn tồn tại sau khi reset ECU                                                                                                                              | Tạo lỗi → reset ECU → kiểm tra DTC còn nguyên                                              |
+| CAN communication     | Đúng CAN ID, đúng chu kỳ, đúng data layout                                                                                                                 | Dùng CAN analyzer / logger để bắt và so sánh                                                |
+| GUI                   | Hiển thị đúng dữ liệu nhận được, cập nhật kịp thời                                                                                                  | So sánh dữ liệu trên GUI với dữ liệu gửi từ ECU                                          |
+| Fault Injection       | Lệnh inject từ GUI/nút bấm tạo đúng lỗi tương ứng                                                                                                      | Test từng loại lỗi trong danh sách mục 14.3                                                  |
+| UDS Diagnostic Tester | Đọc đúng số lượng/DTC theo yêu cầu (0x19), Clear DTC hoạt động (0x14), trả đúng Negative Response (NRC) khi request sai SID/sub-function/độ dài | Gửi request UDS qua 0x500, kiểm tra response 0x501 (bao gồm cả case lỗi để xác nhận NRC) |
 
 ### 17.1. Test case mẫu (end-to-end)
 
@@ -589,7 +670,7 @@ Bước 4: DEM debounce đủ chu kỳ → Confirm
 Bước 5: DTC P0217 được tạo, lưu vào NvM
 Bước 6: COM/PduR/CanIf/CAN Driver gửi bản tin 0x200
 Bước 7: GUI nhận bản tin, hiển thị:
-        "P0217 - COOLANT OVER TEMPERATURE"
+        "0xD101 - COOLANT OVER TEMPERATURE"
 
 Kết quả mong đợi: GUI hiển thị đúng mã và tên lỗi trong vòng ≤ 1.5s kể từ khi Coolant vượt ngưỡng đủ số chu kỳ debounce.
 ```
@@ -598,7 +679,7 @@ Kết quả mong đợi: GUI hiển thị đúng mã và tên lỗi trong vòng 
 
 ## 18. Phân chia công việc 2 người
 
-Cách chia ban đầu theo đề xuất là hợp lý, giữ nguyên với một vài điều chỉnh nhỏ để cân bằng khối lượng công việc (Thành viên 2 phụ trách CAN + GUI + Fault Injection có khối lượng khá lớn, nên bổ sung DIO/OBD-II Reader vào phía Thành viên 2 và để Thành viên 1 hỗ trợ IoHwAb/OBD-II export ở phía ECU).
+Cách chia ban đầu theo đề xuất là hợp lý, giữ nguyên với một vài điều chỉnh nhỏ để cân bằng khối lượng công việc (Thành viên 2 phụ trách CAN + GUI + Fault Injection có khối lượng khá lớn, nên bổ sung DIO/UDS Diagnostic Tester vào phía Thành viên 2 và để Thành viên 1 hỗ trợ IoHwAb/DCM export ở phía ECU).
 
 ### Thành viên 1 – "ECU Core & Diagnosis"
 
@@ -611,7 +692,7 @@ Cách chia ban đầu theo đề xuất là hợp lý, giữ nguyên với một
 - Diagnostic SWC.
 - DEM (debounce, status byte, DTC table).
 - NvM (lưu/đọc DTC).
-- OBD-II style export logic (phía ECU, xử lý request 0x500/0x501).
+- DCM + logic dịch vụ UDS core (phía ECU, xử lý request/response 0x500/0x501: ReadDTCInformation 0x19, ClearDiagnosticInformation 0x14, Negative Response/NRC).
 
 ### Thành viên 2 – "Communication & GUI"
 
@@ -620,7 +701,7 @@ Cách chia ban đầu theo đề xuất là hợp lý, giữ nguyên với một
 - Thiết kế bản tin CAN (CAN ID, DLC, data layout — phối hợp với Thành viên 1).
 - GUI trên OLED I2C (thiết kế menu, vẽ giao diện, xử lý nút bấm).
 - Fault Injection (giao diện chọn lỗi trên GUI + gửi lệnh CAN).
-- OBD-II Reader (thiết bị/chương trình đọc riêng).
+- UDS Diagnostic Tester tool (chương trình PC hoặc MCU phụ, gửi UDS request/nhận response).
 - CAN monitoring/logging phục vụ test và debug.
 - Tích hợp hệ thống (Integration) — phối hợp cùng Thành viên 1 ở Phase 8.
 
@@ -634,20 +715,20 @@ Cách chia ban đầu theo đề xuất là hợp lý, giữ nguyên với một
 
 ## 19. Kế hoạch 12 tuần
 
-| Tuần | Phase                             | Công việc                                                                                                             | Người phụ trách            | Deliverable                                                   | Milestone                                            |
-| ----- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------- | ---------------------------------------------------- |
-| 1     | Phase 1 – Architecture           | Thiết kế kiến trúc tổng thể, phân lớp AUTOSAR rút gọn, chọn MCU/module CAN/OLED                              | Cả 2                          | Tài liệu kiến trúc (bản vẽ + mô tả module)            | ✅ Kiến trúc được duyệt                        |
-| 2     | Phase 1 – Architecture           | Thiết kế chi tiết interface giữa các lớp (RTE API, DEM API, COM signal list), chọn cảm biến + mạch mô phỏng | Cả 2                          | Bảng interface, sơ đồ CAN ID sơ bộ                      | Interface spec hoàn chỉnh                          |
-| 3     | Phase 2 – Sensor + MCAL + IoHwAb | Setup ADC/DIO driver, đọc thử cảm biến, mạch mô phỏng biến trở                                                | TV1                            | ADC/DIO driver hoạt động, đọc giá trị thô             | Đọc được 3 cảm biến                           |
-| 4     | Phase 2 – Sensor + MCAL + IoHwAb | Hoàn thiện IoHwAb (quy đổi đơn vị), song song: TV2 setup CAN Driver cơ bản                                     | TV1 (IoHwAb), TV2 (CAN Driver) | IoHwAb module, CAN loopback test                              | Giá trị cảm biến quy đổi đúng đơn vị      |
-| 5     | Phase 3 – RTE + Application SWC  | Viết RTE rút gọn, khung Sensor Monitoring SWC                                                                        | TV1                            | RTE + Sensor Monitoring SWC (chưa có threshold logic)       | Dữ liệu chảy từ Sensor đến SWC qua RTE         |
-| 6     | Phase 3 – RTE + Application SWC  | Hoàn thiện threshold/range/timeout logic trong Sensor Monitoring SWC                                                  | TV1                            | Sensor Monitoring SWC hoàn chỉnh                            | Phát hiện đúng Normal/Over/Under/Invalid/Timeout |
-| 7     | Phase 4 – Diagnosis + DEM + DTC  | Diagnostic SWC + DEM (debounce, status byte, bảng 6 DTC)                                                               | TV1                            | DEM + DTC table hoạt động                                  | Tạo đúng DTC khi có lỗi                         |
-| 8     | Phase 5 – CAN                    | Hoàn thiện CanIf/PduR/COM, định nghĩa đầy đủ bản tin CAN (0x100–0x501)                                       | TV2                            | CAN communication hoạt động (ECU gửi được dữ liệu)   | Bắt được đúng bản tin bằng CAN analyzer      |
-| 9     | Phase 6 – GUI                    | Thiết kế và code GUI trên OLED (Sensor Dashboard, ECU Status, DTC Display)                                          | TV2                            | GUI hiển thị dữ liệu nhận từ CAN                        | GUI hiển thị đúng dữ liệu thời gian thực     |
-| 10    | Phase 6 – GUI + Phase 7 – NVM   | Hoàn thiện GUI (CAN Status, Fault Injection Menu); song song TV1 làm NvM                                             | TV2 (GUI), TV1 (NvM)           | GUI hoàn chỉnh, NvM lưu/đọc DTC                          | DTC còn sau khi reset ECU                           |
-| 11    | Phase 8 – Integration            | Tích hợp toàn bộ hệ thống, Fault Injection end-to-end, OBD-II Reader                                              | Cả 2                          | Hệ thống tích hợp đầy đủ                              | Luồng end-to-end chạy được từ Sensor đến GUI |
-| 12    | Phase 9 – Testing + Demo         | Chạy Test Plan (mục 17), sửa lỗi, tập kịch bản demo, viết báo cáo                                             | Cả 2                          | Test report, kịch bản demo hoàn chỉnh, báo cáo đồ án | ✅ Sẵn sàng bảo vệ đồ án                      |
+| Tuần | Phase                             | Công việc                                                                                                             | Người phụ trách            | Deliverable                                                   | Milestone                                                                                  |
+| ----- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| 1     | Phase 1 – Architecture           | Thiết kế kiến trúc tổng thể, phân lớp AUTOSAR rút gọn, chọn MCU/module CAN/OLED                              | Cả 2                          | Tài liệu kiến trúc (bản vẽ + mô tả module)            | ✅ Kiến trúc được duyệt                                                              |
+| 2     | Phase 1 – Architecture           | Thiết kế chi tiết interface giữa các lớp (RTE API, DEM API, COM signal list), chọn cảm biến + mạch mô phỏng | Cả 2                          | Bảng interface, sơ đồ CAN ID sơ bộ                      | Interface spec hoàn chỉnh                                                                |
+| 3     | Phase 2 – Sensor + MCAL + IoHwAb | Setup ADC/DIO driver, đọc thử cảm biến, mạch mô phỏng biến trở                                                | TV1                            | ADC/DIO driver hoạt động, đọc giá trị thô             | Đọc được 3 cảm biến                                                                 |
+| 4     | Phase 2 – Sensor + MCAL + IoHwAb | Hoàn thiện IoHwAb (quy đổi đơn vị), song song: TV2 setup CAN Driver cơ bản                                     | TV1 (IoHwAb), TV2 (CAN Driver) | IoHwAb module, CAN loopback test                              | Giá trị cảm biến quy đổi đúng đơn vị                                            |
+| 5     | Phase 3 – RTE + Application SWC  | Viết RTE rút gọn, khung Sensor Monitoring SWC                                                                        | TV1                            | RTE + Sensor Monitoring SWC (chưa có threshold logic)       | Dữ liệu chảy từ Sensor đến SWC qua RTE                                               |
+| 6     | Phase 3 – RTE + Application SWC  | Hoàn thiện threshold/range/timeout logic trong Sensor Monitoring SWC                                                  | TV1                            | Sensor Monitoring SWC hoàn chỉnh                            | Phát hiện đúng Normal/Over/Under/Invalid/Timeout                                       |
+| 7     | Phase 4 – Diagnosis + DEM + DTC  | Diagnostic SWC + DEM (debounce, status byte, bảng 6 DTC)                                                               | TV1                            | DEM + DTC table hoạt động                                  | Tạo đúng DTC khi có lỗi                                                               |
+| 8     | Phase 5 – CAN                    | Hoàn thiện CanIf/PduR/COM, định nghĩa đầy đủ bản tin CAN (0x100–0x501)                                       | TV2                            | CAN communication hoạt động (ECU gửi được dữ liệu)   | Bắt được đúng bản tin bằng CAN analyzer                                            |
+| 9     | Phase 6 – GUI                    | Thiết kế và code GUI trên OLED (Sensor Dashboard, ECU Status, DTC Display)                                          | TV2                            | GUI hiển thị dữ liệu nhận từ CAN                        | GUI hiển thị đúng dữ liệu thời gian thực                                           |
+| 10    | Phase 6 – GUI + Phase 7 – NVM   | Hoàn thiện GUI (CAN Status, Fault Injection Menu); song song TV1 làm NvM                                             | TV2 (GUI), TV1 (NvM)           | GUI hoàn chỉnh, NvM lưu/đọc DTC                          | DTC còn sau khi reset ECU                                                                 |
+| 11    | Phase 8 – Integration            | Tích hợp toàn bộ hệ thống, Fault Injection end-to-end, DCM + UDS Diagnostic Tester end-to-end (0x19/0x14)         | Cả 2                          | Hệ thống tích hợp đầy đủ                              | Luồng end-to-end chạy được từ Sensor đến GUI, và song song đọc/xóa DTC qua UDS |
+| 12    | Phase 9 – Testing + Demo         | Chạy Test Plan (mục 17), sửa lỗi, tập kịch bản demo, viết báo cáo                                             | Cả 2                          | Test report, kịch bản demo hoàn chỉnh, báo cáo đồ án | ✅ Sẵn sàng bảo vệ đồ án                                                            |
 
 ---
 
@@ -664,20 +745,21 @@ Cách chia ban đầu theo đề xuất là hợp lý, giữ nguyên với một
 9. **GUI hiển thị lỗi** — chuyển sang màn hình DTC Display, hiển thị "P0217 - COOLANT OVER TEMPERATURE".
 10. **Khôi phục sensor** — vặn biến trở về giá trị bình thường.
 11. **ECU cập nhật trạng thái** — TestFailed = false nhưng TestFailedSinceLastClear vẫn true (DTC vẫn tồn tại cho đến khi Clear).
-12. **Clear DTC** (nếu đã triển khai) — dùng OBD-II Reader gửi lệnh Clear (Mode 04 style), quan sát GUI/OBD-II Reader không còn DTC.
+12. **Clear DTC** — dùng UDS Diagnostic Tester gửi ClearDiagnosticInformation (SID 0x14), quan sát GUI (qua bản tin 0x200) và Tester (qua response 0x501) đều không còn DTC.
+13. **Đọc DTC qua UDS** (minh họa dịch vụ chẩn đoán) — dùng UDS Diagnostic Tester gửi ReadDTCInformation (SID 0x19), quan sát response 0x501 trả về đúng số lượng/mã DTC hiện hành, bao gồm cả một request cố ý sai (ví dụ SID không hỗ trợ) để minh họa Negative Response (NRC).
 
 ---
 
 ## 21. Các rủi ro
 
-| Rủi ro                                                                                             | Mức độ                   | Biện pháp giảm thiểu                                                                            |
-| --------------------------------------------------------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------- |
-| Tích hợp CAN giữa 2 module (ECU/GUI) gặp lỗi phần cứng (transceiver, dây nối, ground loop) | Cao                         | Test CAN loopback sớm (Tuần 4), dùng CAN analyzer để debug từ đầu                           |
-| NvM/EEPROM phức tạp hơn dự kiến, tốn nhiều thời gian debug                                  | Trung bình                 | Có phương án dự phòng đơn giản hơn (mục 11); chốt sớm phương án ở Tuần 2          |
-| Timeline bị trễ do 1 trong 2 người gặp khó khăn kỹ thuật ở phần riêng                   | Trung bình                 | Có buổi sync hàng tuần, chia nhỏ deliverable theo tuần để phát hiện trễ sớm             |
-| Phạm vi bị mở rộng quá đà (feature creep) do muốn thêm UDS/Diagnostic Tester đầy đủ    | Cao nếu không kiểm soát | Chốt scope với giảng viên từ đầu (mục 23), review scope định kỳ mỗi Phase               |
-| Debounce/threshold không phù hợp gây báo lỗi giả hoặc bỏ sót lỗi khi demo                | Trung bình                 | Tinh chỉnh ngưỡng qua thử nghiệm thực tế ở Phase 9, để thời gian buffer cho hiệu chỉnh |
-| Màn hình OLED nhỏ khó hiển thị đủ thông tin, giao diện menu phức tạp hơn dự kiến     | Thấp–Trung bình          | Thiết kế menu tối giản ngay từ đầu (mục 13.2), ưu tiên rõ ràng hơn là đầy đủ      |
+| Rủi ro                                                                                                                                                                                                      | Mức độ                   | Biện pháp giảm thiểu                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------- | --------------------------------------------------------------------------------------------------- |
+| Tích hợp CAN giữa 2 module (ECU/GUI) gặp lỗi phần cứng (transceiver, dây nối, ground loop)                                                                                                          | Cao                         | Test CAN loopback sớm (Tuần 4), dùng CAN analyzer để debug từ đầu                           |
+| NvM/EEPROM phức tạp hơn dự kiến, tốn nhiều thời gian debug                                                                                                                                           | Trung bình                 | Có phương án dự phòng đơn giản hơn (mục 11); chốt sớm phương án ở Tuần 2          |
+| Timeline bị trễ do 1 trong 2 người gặp khó khăn kỹ thuật ở phần riêng                                                                                                                            | Trung bình                 | Có buổi sync hàng tuần, chia nhỏ deliverable theo tuần để phát hiện trễ sớm             |
+| Phạm vi bị mở rộng quá đà (feature creep) do muốn thêm UDS đầy đủ (Session Control, Security Access, Routine Control, CanTp multi-frame...) vượt quá 2 dịch vụ core (0x19/0x14) đã chốt | Cao nếu không kiểm soát | Chốt scope với giảng viên từ đầu (mục 23), review scope định kỳ mỗi Phase               |
+| Debounce/threshold không phù hợp gây báo lỗi giả hoặc bỏ sót lỗi khi demo                                                                                                                         | Trung bình                 | Tinh chỉnh ngưỡng qua thử nghiệm thực tế ở Phase 9, để thời gian buffer cho hiệu chỉnh |
+| Màn hình OLED nhỏ khó hiển thị đủ thông tin, giao diện menu phức tạp hơn dự kiến                                                                                                              | Thấp–Trung bình          | Thiết kế menu tối giản ngay từ đầu (mục 13.2), ưu tiên rõ ràng hơn là đầy đủ      |
 
 ---
 
@@ -685,16 +767,18 @@ Cách chia ban đầu theo đề xuất là hợp lý, giữ nguyên với một
 
 Các mục sau **không** thuộc core scope, chỉ nên thực hiện nếu còn dư thời gian đáng kể sau Phase 9, và **không được đánh đổi bằng việc làm sơ sài core project**:
 
-| Chức năng                                                                             | Lý do không cần thiết cho core project                                                                                                                                                                                    |
-| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Diagnostic Tester riêng theo UDS đầy đủ (ISO 14229)**                      | Yêu cầu triển khai Session Control, Security Access, Routine Control... vượt xa mức cần thiết để minh họa tư duy AUTOSAR + fault diagnosis cơ bản; tốn thời gian không tương xứng với 3 tháng/2 người |
-| **Gateway ECU**                                                                   | Đồ án chỉ có 1 mạng CAN, không có nhu cầu định tuyến liên mạng, thêm Gateway không phục vụ mục tiêu giám sát cảm biến                                                                                 |
-| **Bootloader / ECU reprogramming**                                                | Là một lĩnh vực kỹ thuật riêng biệt (flash qua CAN, security), không liên quan trực tiếp đến giám sát cảm biến và chẩn đoán lỗi                                                                        |
-| **Triển khai đầy đủ AUTOSAR Classic (BSW đầy đủ, RTE Generator, ARXML)** | Cần công cụ thương mại (Vector DaVinci, EB tresos...) và khối lượng cấu hình rất lớn, không khả thi cho đồ án sinh viên trong 3 tháng                                                                    |
-| **Thêm cảm biến Fuel Level, Door Status**                                      | Không làm tăng độ khó kỹ thuật cốt lõi nhưng tăng thời gian tích hợp/hiệu chỉnh; có thể bổ sung Door Status (DIO) nếu dư thời gian vì tận dụng được DIO Driver đã có                          |
-| **Log dữ liệu lên SD Card / máy tính**                                       | Hữu ích cho phân tích sau demo nhưng không phải yêu cầu lõi để chứng minh luồng Sensor→ECU→Diagnosis→DTC→CAN→GUI                                                                                           |
-| **Giao diện GUI trên PC (thay vì chỉ OLED)**                                  | Có thể làm phong phú demo (dashboard đẹp hơn) nhưng OLED đã đủ để chứng minh chức năng; PC GUI có thể là hướng mở rộng báo cáo                                                                      |
-| **Security (mã hóa CAN, xác thực)**                                           | Ngoài phạm vi một hệ thống giám sát/chẩn đoán học thuật, thuộc lĩnh vực Automotive Cybersecurity riêng biệt                                                                                                  |
+| Chức năng                                                                                                                   | Lý do không cần thiết cho core project                                                                                                                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **UDS đầy đủ (Session Control 0x10, Security Access 0x27, Routine Control 0x31, Download/Transfer 0x34/0x36/0x37)** | Vượt xa mức cần thiết để minh họa tư duy AUTOSAR + fault diagnosis cơ bản (core scope chỉ cần 0x19/0x14); tốn thời gian không tương xứng với 3 tháng/2 người                              |
+| **CanTp/ISO-TP đa khung (multi-frame: First Frame/Consecutive Frame/Flow Control)**                                    | Core scope giới hạn phản hồi UDS trong 1 CAN frame (Single Frame) là đủ để minh họa 2 dịch vụ 0x19/0x14; multi-frame chỉ cần khi muốn trả về toàn bộ danh sách nhiều DTC trong 1 lần đọc |
+| **UDS ReadDataByIdentifier (0x22)** đọc trực tiếp giá trị cảm biến tức thời theo DID                          | Không bắt buộc để chứng minh luồng chẩn đoán cốt lõi (đọc/xóa DTC); có thể bổ sung nếu còn thời gian, minh họa thêm một dịch vụ UDS phổ biến                                         |
+| **Gateway ECU**                                                                                                         | Đồ án chỉ có 1 mạng CAN, không có nhu cầu định tuyến liên mạng, thêm Gateway không phục vụ mục tiêu giám sát cảm biến                                                                    |
+| **Bootloader / ECU reprogramming**                                                                                      | Là một lĩnh vực kỹ thuật riêng biệt (flash qua CAN, security), không liên quan trực tiếp đến giám sát cảm biến và chẩn đoán lỗi                                                           |
+| **Triển khai đầy đủ AUTOSAR Classic (BSW đầy đủ, RTE Generator, ARXML)**                                       | Cần công cụ thương mại (Vector DaVinci, EB tresos...) và khối lượng cấu hình rất lớn, không khả thi cho đồ án sinh viên trong 3 tháng                                                       |
+| **Thêm cảm biến Fuel Level, Door Status**                                                                            | Không làm tăng độ khó kỹ thuật cốt lõi nhưng tăng thời gian tích hợp/hiệu chỉnh; có thể bổ sung Door Status (DIO) nếu dư thời gian vì tận dụng được DIO Driver đã có             |
+| **Log dữ liệu lên SD Card / máy tính**                                                                             | Hữu ích cho phân tích sau demo nhưng không phải yêu cầu lõi để chứng minh luồng Sensor→ECU→Diagnosis→DTC→CAN→GUI                                                                              |
+| **Giao diện GUI trên PC (thay vì chỉ OLED)**                                                                        | Có thể làm phong phú demo (dashboard đẹp hơn) nhưng OLED đã đủ để chứng minh chức năng; PC GUI có thể là hướng mở rộng báo cáo                                                         |
+| **Security (mã hóa CAN, xác thực)**                                                                                 | Ngoài phạm vi một hệ thống giám sát/chẩn đoán học thuật, thuộc lĩnh vực Automotive Cybersecurity riêng biệt                                                                                     |
 
 ---
 
@@ -705,11 +789,11 @@ Trước khi bắt đầu triển khai (cuối Tuần 1), nhóm nên trình bày
 1. **AUTOSAR "theo tư duy" chứ không phải AUTOSAR chuẩn đầy đủ** — không dùng công cụ cấu hình thương mại, RTE và các module Service Layer được viết tay bằng C theo đúng vai trò/interface nhưng ở mức rút gọn.
 2. **Số lượng cảm biến: 3** (Coolant Temp, Oil Pressure, Battery Voltage) + OLED GUI — không bắt buộc mở rộng thêm.
 3. **Số lượng DTC: 6** — đủ minh họa các loại lỗi (over-range, under-range, invalid, timeout, CAN timeout), không cần nhiều hơn.
-4. **OBD-II chỉ ở mức "phong cách" (OBD-II style)** — mô phỏng tinh thần Mode 03/04 (đọc/xóa DTC) qua CAN tự định nghĩa, **không phải triển khai đầy đủ ISO 15031/SAE J1979** với đầy đủ PID và giao thức chuẩn.
-5. **GUI là thiết bị giám sát (monitoring display)**, không phải Diagnostic Tester theo chuẩn UDS — chức năng Fault Injection và đọc DTC là chức năng phụ trợ phục vụ demo, không đại diện cho một Diagnostic Tester công nghiệp.
+4. **Chẩn đoán theo UDS (ISO 14229) chỉ ở mức lõi (core subset)**: 2 dịch vụ bắt buộc — **ReadDTCInformation (0x19)** với sub-function 0x01 (đếm số DTC) và 0x02 rút gọn (trả 1 DTC ưu tiên cao nhất), và **ClearDiagnosticInformation (0x14)**; truyền tải dùng **CanTp Single Frame** (không triển khai multi-frame ISO-TP đầy đủ); **không** triển khai Session Control (0x10), Security Access (0x27), Routine Control (0x31), hay bất kỳ dịch vụ nào khác. Đây thay thế hoàn toàn cách tiếp cận OBD-II trước đây của đồ án.
+5. **GUI là thiết bị giám sát (monitoring display)**, không bao giờ gửi UDS request. Vai trò Diagnostic Tester theo đúng nghĩa UDS thuộc về node **UDS Diagnostic Tester** riêng biệt (mục 24) — chỉ là tool tối giản (2 dịch vụ core), không đại diện cho một Diagnostic Tester công nghiệp.
 6. **NVM dùng EEPROM (nội bộ hoặc I2C ngoài)** ở mức đơn giản hóa, không cần cơ chế wear-leveling hay redundancy phức tạp.
-7. **UDS đầy đủ, Gateway ECU, Bootloader/reprogramming, toàn bộ AUTOSAR BSW** đều nằm ngoài phạm vi, chỉ được đề cập như Future Work trong báo cáo, không phải yêu cầu chấm điểm.
-8. **Tiêu chí thành công của đồ án** là chứng minh được luồng end-to-end hoạt động ổn định: Sensor → ECU (theo tư duy AUTOSAR) → Fault Diagnosis → DTC → CAN → GUI → OBD-II Reader, kèm theo tài liệu kiến trúc và test report rõ ràng — không phải quy mô hay số lượng tính năng.
+7. **UDS đầy đủ (Session Control, Security Access, Routine Control, Download/Transfer...), CanTp multi-frame, Gateway ECU, Bootloader/reprogramming, toàn bộ AUTOSAR BSW** đều nằm ngoài phạm vi, chỉ được đề cập như Future Work trong báo cáo, không phải yêu cầu chấm điểm.
+8. **Tiêu chí thành công của đồ án** là chứng minh được luồng end-to-end hoạt động ổn định theo 2 đường tách biệt: (a) Sensor → ECU (theo tư duy AUTOSAR) → Fault Diagnosis → DTC → CAN (COM) → GUI, và (b) song song, độc lập — UDS Diagnostic Tester → CAN → DCM → DEM/NvM (đọc/xóa DTC) → CAN → UDS Diagnostic Tester, kèm theo tài liệu kiến trúc và test report rõ ràng — không phải quy mô hay số lượng tính năng.
 
 ---
 
@@ -717,27 +801,27 @@ Trước khi bắt đầu triển khai (cuối Tuần 1), nhóm nên trình bày
 
 ### 24.1. Nguyên tắc lựa chọn phần cứng
 
-Hệ thống gồm **2 node vật lý độc lập** kết nối qua CAN bus: **ECU node** (đọc cảm biến, chẩn đoán) và **GUI node** (hiển thị OLED). Có thể tùy chọn thêm **OBD-II Reader** là node thứ 3 (một MCU nhỏ khác) hoặc chạy trên PC qua bộ chuyển đổi USB-CAN. Tiêu chí chọn linh kiện: rẻ, phổ biến, dễ mua, có sẵn thư viện/HAL, đủ ngoại vi cần thiết (ADC, I2C, CAN hoặc CAN qua transceiver rời), không yêu cầu công cụ đắt tiền.
+Hệ thống gồm **2 node vật lý độc lập** kết nối qua CAN bus: **ECU node** (đọc cảm biến, chẩn đoán) và **GUI node** (hiển thị OLED). Có thể tùy chọn thêm **UDS Diagnostic Tester** là node thứ 3 (một MCU nhỏ khác) hoặc chạy trên PC qua bộ chuyển đổi USB-CAN. Tiêu chí chọn linh kiện: rẻ, phổ biến, dễ mua, có sẵn thư viện/HAL, đủ ngoại vi cần thiết (ADC, I2C, CAN hoặc CAN qua transceiver rời), không yêu cầu công cụ đắt tiền.
 
 ### 24.2. Danh sách phần cứng (BOM – Bill of Materials)
 
-| # | Linh kiện | Số lượng | Vai trò | Ghi chú lựa chọn |
-|---|---|---|---|---|
-| 1 | **MCU cho ECU node** — STM32F103C8T6 ("Blue Pill") hoặc STM32F407VET6 | 1 | Đóng vai trò ECU prototype: đọc ADC, chạy RTE/SWC/DEM/NvM, giao tiếp CAN | STM32 dòng F1/F4 có bxCAN nội bộ, ADC 12-bit, I2C, đủ ngoại vi; cộng đồng lớn, tài liệu nhiều, giá rẻ (~50–100k VNĐ) |
-| 2 | **MCU cho GUI node** — STM32F103C8T6 (hoặc Arduino Nano/Uno + module CAN rời nếu muốn đơn giản hóa code) | 1 | Đọc CAN, điều khiển OLED, xử lý nút bấm | Nên cùng họ STM32 với ECU để tái sử dụng code CAN Driver/CanIf, giảm công sức phát triển |
-| 3 | **MCU cho OBD-II Reader (tùy chọn)** — STM32F103C8T6 hoặc dùng PC + USB-CAN adapter (ví dụ CANable, Waveshare USB-CAN) | 1 (hoặc thay bằng PC) | Gửi request 0x500, nhận response 0x501, hiển thị DTC qua UART/Serial Monitor hoặc màn hình PC | Dùng PC + USB-CAN đơn giản hơn về phần cứng, chỉ cần viết script Python (python-can) |
-| 4 | **CAN Transceiver** — MCP2551 hoặc SN65HVD230 (module rời) | 2–3 (1/node) | Chuyển đổi tín hiệu CAN logic (Tx/Rx của MCU) thành tín hiệu vi sai CAN_H/CAN_L trên bus | STM32 chỉ có CAN controller (bxCAN), cần transceiver rời để ra bus vật lý |
-| 5 | **Điện trở terminator CAN 120 Ω** | 2 | Đấu ở 2 đầu bus CAN để chống phản xạ tín hiệu | Bắt buộc để bus CAN hoạt động ổn định ở baudrate 500 kbps |
-| 6 | **Màn hình OLED I2C SSD1306 128x64** | 1 | Thiết bị hiển thị GUI | Rẻ, phổ biến, thư viện I2C có sẵn cho STM32/Arduino |
-| 7 | **Nút bấm (tactile push button)** | 3 | Điều hướng menu GUI (Up/Down/Select) | Có thể thêm nút thứ 4 (Back) nếu cần |
-| 8 | **Biến trở (potentiometer) 10kΩ** | 2 | Mô phỏng cảm biến **Coolant Temperature** và **Oil Pressure** dưới dạng tín hiệu analog thay đổi được bằng tay, dùng để test/demo Fault Injection trực quan | Thay thế cho NTC thermistor thật, dễ điều khiển giá trị khi demo |
-| 9 | **NTC Thermistor 10kΩ (tùy chọn, tăng tính thực tế)** | 1 | Phương án thay thế/bổ sung cho biến trở Coolant Temp nếu muốn mô phỏng gần với cảm biến nhiệt độ thật | Cần thêm mạch chia áp + công thức chuyển đổi Steinhart-Hart hoặc bảng tra |
-| 10 | **Mạch chia áp (voltage divider) bằng điện trở cố định** | 1 bộ (2 điện trở) | Đọc **Battery Voltage** từ nguồn cấp board (quy đổi về dải điện áp ADC an toàn, ví dụ 0–3.3V) | Tính toán tỷ lệ chia áp theo điện áp nguồn thực tế sử dụng (ví dụ 12V mô phỏng → chia về ≤3.3V) |
-| 11 | **EEPROM I2C — AT24C32 (module rời)** | 1 | Lưu trữ DTC bền vững (NvM) | Phương án đơn giản hóa so với Flash emulation nội bộ, thư viện I2C dễ triển khai |
-| 12 | **Mạch nạp/debug — ST-Link V2 (clone)** | 1–2 | Nạp firmware và debug cho các board STM32 | Có thể dùng chung 1 cái nếu nạp tuần tự |
-| 13 | **Nguồn cấp — Adapter 5V/12V hoặc pin, breadboard power module** | Theo nhu cầu | Cấp nguồn cho các node và mạch mô phỏng | Nên có nguồn riêng ổn định cho mỗi node khi demo |
-| 14 | **Breadboard, dây jumper, điện trở phụ, tụ lọc** | Theo nhu cầu | Lắp mạch thử nghiệm | Dùng để dựng toàn bộ mạch mô phỏng cảm biến và kết nối CAN |
-| 15 | **USB-CAN Adapter (nếu dùng PC làm OBD-II Reader hoặc CAN Analyzer)** — ví dụ CANable, Waveshare USB-CAN-A | 1 | Kết nối CAN bus với PC để debug/log hoặc chạy công cụ OBD-II Reader | Rất hữu ích cho việc bắt bản tin CAN khi test (mục 17), nên có ít nhất 1 cái dù không dùng làm node chính thức |
+| #  | Linh kiện                                                                                                                                     | Số lượng             | Vai trò                                                                                                                                                                                   | Ghi chú lựa chọn                                                                                                                    |
+| -- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 1  | **MCU cho ECU node** — STM32F103C8T6 ("Blue Pill") hoặc STM32F407VET6                                                                  | 1                       | Đóng vai trò ECU prototype: đọc ADC, chạy RTE/SWC/DEM/NvM, giao tiếp CAN                                                                                                            | STM32 dòng F1/F4 có bxCAN nội bộ, ADC 12-bit, I2C, đủ ngoại vi; cộng đồng lớn, tài liệu nhiều, giá rẻ (~50–100k VNĐ) |
+| 2  | **MCU cho GUI node** — STM32F103C8T6 (hoặc Arduino Nano/Uno + module CAN rời nếu muốn đơn giản hóa code)                        | 1                       | Đọc CAN, điều khiển OLED, xử lý nút bấm                                                                                                                                           | Nên cùng họ STM32 với ECU để tái sử dụng code CAN Driver/CanIf, giảm công sức phát triển                                 |
+| 3  | **MCU/PC cho UDS Diagnostic Tester (tùy chọn)** — STM32F103C8T6 hoặc dùng PC + USB-CAN adapter (ví dụ CANable, Waveshare USB-CAN) | 1 (hoặc thay bằng PC) | Gửi UDS request (0x500: SID 0x19/0x14), nhận response 0x501, hiển thị DTC/NRC qua UART/Serial Monitor hoặc màn hình PC                                                              | Dùng PC + USB-CAN đơn giản hơn về phần cứng, chỉ cần viết script Python (python-can)                                        |
+| 4  | **CAN Transceiver** — MCP2551 hoặc SN65HVD230 (module rời)                                                                            | 2–3 (1/node)           | Chuyển đổi tín hiệu CAN logic (Tx/Rx của MCU) thành tín hiệu vi sai CAN_H/CAN_L trên bus                                                                                         | STM32 chỉ có CAN controller (bxCAN), cần transceiver rời để ra bus vật lý                                                      |
+| 5  | **Điện trở terminator CAN 120 Ω**                                                                                                    | 2                       | Đấu ở 2 đầu bus CAN để chống phản xạ tín hiệu                                                                                                                                  | Bắt buộc để bus CAN hoạt động ổn định ở baudrate 500 kbps                                                                   |
+| 6  | **Màn hình OLED I2C SSD1306 128x64**                                                                                                   | 1                       | Thiết bị hiển thị GUI                                                                                                                                                                  | Rẻ, phổ biến, thư viện I2C có sẵn cho STM32/Arduino                                                                             |
+| 7  | **Nút bấm (tactile push button)**                                                                                                      | 3                       | Điều hướng menu GUI (Up/Down/Select)                                                                                                                                                   | Có thể thêm nút thứ 4 (Back) nếu cần                                                                                            |
+| 8  | **Biến trở (potentiometer) 10kΩ**                                                                                                     | 2                       | Mô phỏng cảm biến**Coolant Temperature** và **Oil Pressure** dưới dạng tín hiệu analog thay đổi được bằng tay, dùng để test/demo Fault Injection trực quan | Thay thế cho NTC thermistor thật, dễ điều khiển giá trị khi demo                                                               |
+| 9  | **NTC Thermistor 10kΩ (tùy chọn, tăng tính thực tế)**                                                                             | 1                       | Phương án thay thế/bổ sung cho biến trở Coolant Temp nếu muốn mô phỏng gần với cảm biến nhiệt độ thật                                                                   | Cần thêm mạch chia áp + công thức chuyển đổi Steinhart-Hart hoặc bảng tra                                                   |
+| 10 | **Mạch chia áp (voltage divider) bằng điện trở cố định**                                                                        | 1 bộ (2 điện trở)   | Đọc**Battery Voltage** từ nguồn cấp board (quy đổi về dải điện áp ADC an toàn, ví dụ 0–3.3V)                                                                         | Tính toán tỷ lệ chia áp theo điện áp nguồn thực tế sử dụng (ví dụ 12V mô phỏng → chia về ≤3.3V)                    |
+| 11 | **EEPROM I2C — AT24C32 (module rời)**                                                                                                  | 1                       | Lưu trữ DTC bền vững (NvM)                                                                                                                                                             | Phương án đơn giản hóa so với Flash emulation nội bộ, thư viện I2C dễ triển khai                                         |
+| 12 | **Mạch nạp/debug — ST-Link V2 (clone)**                                                                                               | 1–2                    | Nạp firmware và debug cho các board STM32                                                                                                                                               | Có thể dùng chung 1 cái nếu nạp tuần tự                                                                                        |
+| 13 | **Nguồn cấp — Adapter 5V/12V hoặc pin, breadboard power module**                                                                     | Theo nhu cầu           | Cấp nguồn cho các node và mạch mô phỏng                                                                                                                                             | Nên có nguồn riêng ổn định cho mỗi node khi demo                                                                               |
+| 14 | **Breadboard, dây jumper, điện trở phụ, tụ lọc**                                                                                  | Theo nhu cầu           | Lắp mạch thử nghiệm                                                                                                                                                                    | Dùng để dựng toàn bộ mạch mô phỏng cảm biến và kết nối CAN                                                               |
+| 15 | **USB-CAN Adapter (nếu dùng PC làm UDS Diagnostic Tester hoặc CAN Analyzer)** — ví dụ CANable, Waveshare USB-CAN-A                | 1                       | Kết nối CAN bus với PC để debug/log hoặc chạy công cụ UDS Diagnostic Tester                                                                                                       | Rất hữu ích cho việc bắt bản tin CAN khi test (mục 17), nên có ít nhất 1 cái dù không dùng làm node chính thức       |
 
 ### 24.3. Sơ đồ kết nối phần cứng (mức tổng quan)
 
@@ -757,7 +841,7 @@ Hệ thống gồm **2 node vật lý độc lập** kết nối qua CAN bus: **
                                └─────────────────────┘   │
                                                             │
                                ┌─────────────────────┐   │
-                               │  OBD-II Reader          │◄──┘
+                               │  UDS Diagnostic Tester │◄──┘
                                │  (MCU phụ hoặc PC+USB-CAN)│
                                └─────────────────────┘
 ```
@@ -772,7 +856,7 @@ Tổng chi phí phần cứng ước tính cho toàn bộ dự án (2 MCU STM32 
 
 ### 25.1. Nguyên tắc tổ chức
 
-Vì hệ thống gồm **firmware cho 2–3 node độc lập** (ECU, GUI, OBD-II Reader) nhưng cần **chia sẻ định nghĩa chung** (CAN ID, DTC list, signal scale factor) để tránh sai lệch giữa hai bên khi phát triển song song, cấu trúc thư mục được tổ chức thành các project riêng biệt cộng với một thư mục `Common/` dùng chung.
+Vì hệ thống gồm **firmware cho 2–3 node độc lập** (ECU, GUI, UDS Diagnostic Tester) nhưng cần **chia sẻ định nghĩa chung** (CAN ID, DTC list, SID/NRC UDS, signal scale factor) để tránh sai lệch giữa hai bên khi phát triển song song, cấu trúc thư mục được tổ chức thành các project riêng biệt cộng với một thư mục `Common/` dùng chung.
 
 ### 25.2. Cây thư mục đề xuất
 
@@ -805,10 +889,14 @@ DATN_AUTOSAR_Sensor_Monitoring/
 │   │   ├── Com/
 │   │   │   ├── Com.c
 │   │   │   ├── Com.h
-│   │   │   └── Com_Cfg.h                # Mapping signal ↔ PDU
+│   │   │   └── Com_Cfg.h                # Mapping signal ↔ PDU (chỉ dữ liệu ứng dụng, không UDS)
+│   │   ├── Dcm/
+│   │   │   ├── Dcm.c
+│   │   │   ├── Dcm.h
+│   │   │   └── Dcm_Cfg.h                # Bảng SID → handler (0x19, 0x14), định nghĩa NRC
 │   │   └── PduR/
 │   │       ├── PduR.c
-│   │       └── PduR.h
+│   │       └── PduR.h                   # Định tuyến 2 luồng: COM↔CanIf và Dcm↔CanIf
 │   │
 │   ├── EcuAbstraction/
 │   │   ├── IoHwAb/
@@ -857,15 +945,16 @@ DATN_AUTOSAR_Sensor_Monitoring/
 │   ├── main.c
 │   └── GUI_Firmware.ioc / Makefile
 │
-├── OBD_Reader_Tool/                     # Công cụ đọc OBD-II (Thành viên 2 hỗ trợ)
-│   ├── obd_reader.py                    # Nếu dùng PC + USB-CAN (python-can)
+├── UDS_Tester_Tool/                     # Công cụ UDS Diagnostic Tester (Thành viên 2 hỗ trợ)
+│   ├── uds_tester.py                    # Nếu dùng PC + USB-CAN (python-can); gửi SID 0x19/0x14, đọc response/NRC
 │   ├── requirements.txt
 │   └── README.md
-│   # Hoặc thay bằng OBD_Reader_Firmware/ nếu dùng MCU phụ, cấu trúc tương tự GUI_Firmware/
+│   # Hoặc thay bằng UDS_Tester_Firmware/ nếu dùng MCU phụ, cấu trúc tương tự GUI_Firmware/
 │
 ├── Common/                              # Định nghĩa dùng chung giữa các node — QUAN TRỌNG để tránh sai lệch
 │   ├── CanIds.h                         # Toàn bộ CAN ID, DLC, chu kỳ (mục 12)
-│   ├── DtcList.h                        # Bảng 6 DTC dùng chung (mục 10)
+│   ├── DtcList.h                        # Bảng 6 DTC nội bộ dùng chung (mục 10)
+│   ├── UdsIds.h                         # SID, NRC, sub-function dùng chung giữa ECU và UDS Tester (mục 12.3)
 │   └── SignalDefs.h                     # Scale factor, offset, đơn vị của từng signal
 │
 ├── Docs/
@@ -879,7 +968,7 @@ DATN_AUTOSAR_Sensor_Monitoring/
 
 ### 25.3. Ghi chú quan trọng
 
-- **`Common/` là thư mục bắt buộc dùng chung**: cả `ECU_Firmware/` và `GUI_Firmware/` (và `OBD_Reader_Tool/`) đều `#include` các file trong `Common/` để đảm bảo CAN ID, DTC, và signal scale factor luôn đồng bộ giữa các node — tránh lỗi kinh điển là 2 bên định nghĩa lệch nhau (ví dụ ECU gửi Coolant scale x10 nhưng GUI đọc x1).
+- **`Common/` là thư mục bắt buộc dùng chung**: cả `ECU_Firmware/` và `GUI_Firmware/` (và `UDS_Tester_Tool/`) đều `#include`/dùng chung các file trong `Common/` để đảm bảo CAN ID, DTC, định dạng SID/NRC UDS, và signal scale factor luôn đồng bộ giữa các node — tránh lỗi kinh điển là 2 bên định nghĩa lệch nhau (ví dụ ECU gửi Coolant scale x10 nhưng GUI đọc x1).
 - Mỗi thư mục con trong `ECU_Firmware/` **ánh xạ trực tiếp 1-1 với các lớp kiến trúc AUTOSAR** đã mô tả ở mục 6–7, giúp báo cáo đồ án và code nhất quán với nhau khi trình bày trước hội đồng.
 - Nếu dùng STM32CubeIDE, mỗi project (`ECU_Firmware`, `GUI_Firmware`) nên là 1 project CubeIDE riêng biệt; nếu dùng PlatformIO, có thể tổ chức thành 2 environment riêng trong cùng 1 workspace.
 - Nên dùng **Git repository chung** cho toàn bộ `DATN_AUTOSAR_Sensor_Monitoring/`, với `.gitignore` loại trừ các file build tạm (`Debug/`, `Release/`, `*.o`, `*.bin`), để cả 2 thành viên cùng theo dõi thay đổi ở `Common/`.
